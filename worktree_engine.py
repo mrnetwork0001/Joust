@@ -1543,7 +1543,10 @@ def get_bout_details(bout_id: str, include_diffs: bool = True) -> Dict[str, Any]
         raise ValueError(f"Unknown bout_id: {bout_id!r}")
 
     c_rows = conn.execute(
-        "SELECT * FROM contenders WHERE bout_id = ? ORDER BY score DESC, duration_ms ASC, rowid ASC",
+        "SELECT * FROM contenders WHERE bout_id = ? ORDER BY "
+        "(tests_passed = 1 AND flaky = 0) DESC, "
+        "CASE WHEN crossfire_total > 0 THEN crossfire_survived * 1.0 / crossfire_total ELSE 0 END DESC, "
+        "score DESC, duration_ms ASC, rowid ASC",
         (bout_id,),
     ).fetchall()
     e_rows = conn.execute(
@@ -1553,8 +1556,7 @@ def get_bout_details(bout_id: str, include_diffs: bool = True) -> Dict[str, Any]
 
     contenders: List[Dict[str, Any]] = []
     for rank, r in enumerate(c_rows, start=1):
-        wt_path = Path(r["worktree_path"])
-        _, _, _, diff_text = _compute_worktree_diff_stats(wt_path)
+        diff_text = _compute_worktree_diff_stats(Path(r["worktree_path"]))[3] if include_diffs else ""
         contenders.append(
             {
                 "rank": rank,
@@ -1564,6 +1566,7 @@ def get_bout_details(bout_id: str, include_diffs: bool = True) -> Dict[str, Any]
                 "model": r["model"],
                 "worktree_path": r["worktree_path"],
                 "status": r["status"],
+                "subagent_session_id": r["subagent_session_id"] or "",
                 "tests_passed": bool(r["tests_passed"]),
                 "exit_code": int(r["exit_code"]),
                 "duration_ms": float(r["duration_ms"]),
@@ -1575,6 +1578,12 @@ def get_bout_details(bout_id: str, include_diffs: bool = True) -> Dict[str, Any]
                 "test_output": r["test_output"],
                 "steering_notes": json.loads(r["steering_notes_json"] or "[]"),
                 "tool_calls_count": int(r["tool_calls_count"]),
+                "crossfire": json.loads(r["crossfire_json"] or "{}"),
+                "crossfire_survived": int(r["crossfire_survived"]),
+                "crossfire_total": int(r["crossfire_total"]),
+                "runs": json.loads(r["runs_json"] or "[]"),
+                "flaky": bool(r["flaky"]),
+                "branch_ref": r["branch_ref"] or "",
                 "diff_preview": diff_text[:4000],
                 "is_winner": (r["contender_id"] == bout_row["winner_id"] and bool(bout_row["winner_id"])),
                 "is_merged": (r["contender_id"] == bout_row["merged_contender_id"] and bool(bout_row["merged_contender_id"])),
