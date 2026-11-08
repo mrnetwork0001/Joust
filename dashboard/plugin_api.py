@@ -1,8 +1,13 @@
-"""FastAPI backend routes for Joust (/api/plugins/joust/*) shared by Hermes Desktop and Dashboard."""
+"""FastAPI backend routes for Joust (/api/plugins/joust/*) shared by Hermes Desktop and Dashboard.
+
+Hermes imports this file by path (``importlib.util.spec_from_file_location``), outside the plugin package,
+so the engine is loaded the same way under a namespaced module name. The plugin directory is never put on
+``sys.path``: that would let a plugin file shadow a Hermes top-level package (e.g. ``tools``).
+"""
 
 from __future__ import annotations
 
-import sys
+import importlib.util
 from pathlib import Path
 from typing import Any, Dict
 
