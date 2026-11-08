@@ -474,3 +474,39 @@ class TestDesktopNotify(unittest.TestCase):
 
 
 @unittest.skipUnless(HERMES_AVAILABLE, "Hermes is not importable in this interpreter")
+class TestHermesWireCodec(_JoustCase):
+    """The real plugin-host codec: a SubagentHandle crosses as a Record, middleware results as JSON."""
+
+    def test_subagent_handle_crosses_wire_as_record_and_create_bout_copes(self) -> None:
+        from agent.subagent_lifecycle import SubagentHandle
+        from hermes_cli.plugin_host_wire import Record, decode, encode
+
+        def factory(sub_id: str, correlation_id: Optional[str]) -> Any:
+            handle = SubagentHandle(1, sub_id, "parent-sess", correlation_id, time.time(), None, None, "leaf", 1, "cap")
+            crossed = decode(encode(handle))
+            assert isinstance(crossed, Record) and not hasattr(crossed, "to_dict")
+            return crossed
+
+        lifecycle = _FakeLifecycle(handle_factory=factory)
+        bout = self._launch(_FakeCtx(lifecycle))
+        rows = self._handle_rows(bout["bout_id"])
+        for row in rows.values():
+            stored = json.loads(row["subagent_handle_json"])
+            self.assertEqual(SubagentHandle.from_dict(stored).parent_session_id, "parent-sess")
+        res = json.loads(tools.joust_steer({"bout_id": bout["bout_id"], "contender_id": "plus-operator", "guidance": "go"}))
+        self.assertTrue(res["steered_live_subagent"])
+        (handle, _), = lifecycle.steered
+        # Joust sends the persisted dict back; the real service coerces a Mapping with SubagentHandle.from_dict.
+        self.assertEqual(SubagentHandle.from_dict(decode(encode(handle))).subagent_id, "sub-1")
+
+    def test_middleware_result_round_trips_through_wire_codec(self) -> None:
+        from hermes_cli.plugin_host_wire import decode, encode
+        bout = self._launch(_FakeCtx(_FakeLifecycle()))
+        a = bout["contenders"][0]
+        out = joust_pkg._on_tool_request(tool_name="terminal", args={"command": "ls"}, session_id=a["subagent_session_id"])
+        self.assertEqual(decode(encode(out)), out)
+        self.assertEqual(out["args"]["workdir"], a["worktree_path"])
+
+
+if __name__ == "__main__":
+    unittest.main()
