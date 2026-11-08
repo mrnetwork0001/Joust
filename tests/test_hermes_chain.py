@@ -418,7 +418,7 @@ class TestHermesChain(unittest.TestCase):
         self.assertTrue(judged["tests_passed"])
         self.assertGreaterEqual(judged["duration_ms"], 1000.0)
 
-    def test_10_post_tool_call_via_lifecycle_invoke_hook_counts_contender_activity(self) -> None:
+    def test_10_activity_is_counted_by_middleware_not_post_tool_call(self) -> None:
         from hermes_cli import plugins_dispatch
         from hermes_cli.lifecycle import invoke_hook
 
@@ -444,6 +444,13 @@ class TestHermesChain(unittest.TestCase):
         finally:
             self.manager._hooks["post_tool_call"].remove(spy)
         self.assertIsNot(seen["thread"], threading.current_thread(), "bounded hooks run on a daemon worker thread")
+        # post_tool_call alone never counts: Hermes does not emit it for subagent calls, so counting lives
+        # in the tool_request middleware, which Hermes runs for every child tool call.
+        counts = {c["contender_id"]: c["tool_calls_count"] for c in self.engine.get_bout_details(bout["bout_id"])["contenders"]}
+        self.assertEqual(counts, {"plus-operator": 0, "sum-builtin": 0})
+        from hermes_cli.middleware import apply_tool_request_middleware
+        for sid in ("chain-sess-E", "chain-sess-E", "not-a-contender"):
+            apply_tool_request_middleware("read_file", {"path": "calc.py"}, session_id=sid, task_id="", tool_call_id="x", turn_id="", api_request_id="")
         counts = {c["contender_id"]: c["tool_calls_count"] for c in self.engine.get_bout_details(bout["bout_id"])["contenders"]}
         self.assertEqual(counts, {"plus-operator": 2, "sum-builtin": 0})
 

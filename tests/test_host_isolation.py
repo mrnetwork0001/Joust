@@ -277,7 +277,7 @@ class TestWireSafety(_JoustCase):
             telemetry_schema_version=1))
         details = worktree_engine.get_bout_details(bout["bout_id"])
         counts = {c["contender_id"]: c["tool_calls_count"] for c in details["contenders"]}
-        self.assertEqual(counts["plus-operator"], 1)
+        self.assertEqual(counts["plus-operator"], 0)  # post_tool_call never counts (middleware does)
         kinds = [e["event_type"] for e in details["events"]]
         self.assertIn("contender.subagent_stopped", kinds)
         # auto_evaluate_on_stop=False must leave the contender unjudged.
@@ -302,10 +302,10 @@ class TestHostRestartRecovery(_JoustCase):
         out = joust_pkg._on_tool_request(tool_name="write_file", args={"path": "calc.py", "content": "x"},
                                          session_id=a["subagent_session_id"], task_id="")
         self.assertEqual(out["args"]["path"], str(Path(a["worktree_path"]) / "calc.py"))
-        joust_pkg._on_post_tool_call(tool_name="write_file", args={}, result="", session_id=b["subagent_session_id"])
+        joust_pkg._on_tool_request(tool_name="read_file", args={"path": "calc.py"}, session_id=b["subagent_session_id"])
         details = worktree_engine.get_bout_details(bout["bout_id"])
         counts = {c["contender_id"]: c["tool_calls_count"] for c in details["contenders"]}
-        self.assertEqual(counts, {"plus-operator": 0, "sum-builtin": 1})
+        self.assertEqual(counts, {"plus-operator": 1, "sum-builtin": 1})
 
     def test_unknown_session_after_restart_stays_unbound(self) -> None:
         self._launch(_FakeCtx(_FakeLifecycle()))

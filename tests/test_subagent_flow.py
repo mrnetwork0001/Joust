@@ -218,16 +218,19 @@ class TestSubagentFlow(unittest.TestCase):
         self.assertEqual(judged["sum-builtin"]["exit_code"], -1)
         self.assertEqual(details["status"], "partial")
 
-    def test_post_tool_call_counts_contender_activity(self) -> None:
+    def test_middleware_counts_contender_activity(self) -> None:
+        # Hermes runs tool_request middleware for subagent calls but never post_tool_call,
+        # so activity is counted in the middleware and post_tool_call must not double count.
         bout = self._launch()
         a = bout["contenders"][0]
         for _ in range(3):
+            joust_pkg._on_tool_request(tool_name="read_file", args={"path": "calc.py"}, session_id=a["subagent_session_id"])
             joust_pkg._on_post_tool_call(tool_name="read_file", args={}, result="", session_id=a["subagent_session_id"])
+        joust_pkg._on_tool_request(tool_name="read_file", args={"path": "calc.py"}, session_id="not-a-contender")
         details = worktree_engine.get_bout_details(bout["bout_id"])
         counts = {c["contender_id"]: c["tool_calls_count"] for c in details["contenders"]}
         self.assertEqual(counts["plus-operator"], 3)
         self.assertEqual(counts["sum-builtin"], 0)
-
     def test_steer_reaches_live_subagent_via_handle(self) -> None:
         bout = self._launch()
         res = json.loads(tools.joust_steer({"bout_id": bout["bout_id"], "contender_id": "sum-builtin", "guidance": "Use sum()"}))
