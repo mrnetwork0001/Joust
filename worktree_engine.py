@@ -382,6 +382,11 @@ def pop_violation(*keys: Optional[str]) -> Optional[str]:
     return None
 
 
+def _inside(p: Path, root: Path) -> bool:
+    """Component-aware containment (``/wt/alpha-2`` is NOT inside ``/wt/alpha``)."""
+    return p == root or root in p.parents
+
+
 def _jail_path_inside_worktree(raw_path: str, worktree_root: Path, main_repo_root: Optional[Path] = None) -> str:
     """Ensure a file path resolves inside worktree_root, rewriting relative or main-repo paths safely."""
     worktree_resolved = worktree_root.resolve()
