@@ -402,3 +402,19 @@ class TestHermesChain(unittest.TestCase):
         self.assertIn("contender.subagent_stopped", events)
         self.assertIn("bout.evaluated", events)
 
+    def test_09_subagent_stop_offloads_the_benchmark_from_the_firing_thread(self) -> None:
+        """subagent_stop is in _HOOK_CALLER_THREAD_HOOKS (no timeout, caller thread), so Joust must not run the
+        benchmark inline: the hook returns immediately and a daemon thread judges the contender."""
+        repo = _make_repo(Path(self._tmp.name))
+        slow = f'{sys.executable} -c "import time; time.sleep(1.2)"'
+        bout = self._launch(repo, test_command=slow)["bout"]
+        self._start_hook(bout["bout_id"], "sum-builtin", "chain-sess-D", "sa-D")
+        t0 = time.perf_counter()
+        self._stop_hook("chain-sess-D")
+        elapsed = time.perf_counter() - t0
+        self.assertLess(elapsed, 0.8, f"subagent_stop blocked the firing thread for {elapsed:.2f}s")
+        self._wait_judges()
+        judged = self._contenders(self.engine.get_bout_details(bout["bout_id"]))["sum-builtin"]
+        self.assertTrue(judged["tests_passed"])
+        self.assertGreaterEqual(judged["duration_ms"], 1000.0)
+
