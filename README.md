@@ -42,10 +42,12 @@
 | **Tool** | `joust_diff` | Inspect unified Git diffs and LOC stats (`files_changed`, `insertions`, `deletions`) per contender. |
 | **Tool** | `joust_steer` | Send mid-flight steering guidance to a running subagent contender (`ctx.subagent_lifecycle.steer`) or update files in its worktree. |
 | **Tool** | `joust_merge` | Apply (`apply`), pre-flight (`dry_run`), revert (`rollback`), or prune (`cleanup`) contender worktrees. |
+| **Tool** | `joust_crossfire` | Fire every contender's new tests at every rival worktree; survival rate becomes the first leaderboard tiebreak. |
+| **Tool** | `joust_report` | Keep every contender as a `joust/<bout>/<contender>` branch and write a markdown bout report. |
 | **Tool** | `joust_status` | Inspect bouts, leaderboards, or run a self-contained 3-contender demo tournament (`run_demo=True`). |
 | **Middleware** | `tool_request` | Jails contender subagent file/terminal paths strictly inside their assigned Git worktree. |
-| **Hooks** | `post_tool_call`, `subagent_stop` | Tracks tool activity per contender and auto-evaluates worktrees when a subagent completes. |
-| **Slash / CLI** | `/joust`, `hermes joust` | Manage bouts, run `/joust demo`, judge contenders, and merge/rollback from chat or CLI. |
+| **Hooks** | `pre_tool_call`, `subagent_start`, `post_tool_call`, `subagent_stop` | Vetoes a contender's tool call that tried to escape its worktree and asks for human approval before `joust_merge` touches your tree (`approve` directive); binds each contender subagent's session to its worktree; counts tool activity; auto-judges a worktree (off the hook thread) when its subagent completes. |
+| **Slash / CLI** | `/joust`, `hermes joust` | Manage bouts, run `/joust demo`, judge, `crossfire`, `report`, and merge/rollback from chat or CLI. |
 | **Desktop SDK** | `desktop/plugin.js` | Full `/joust` Arena page, docked right pane, status-bar chip, palette command, and `::joust-bout` inline directive. |
 
 ---
