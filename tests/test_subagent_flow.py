@@ -147,3 +147,19 @@ class TestSubagentFlow(unittest.TestCase):
         self.assertEqual(term["args"]["workdir"], a["worktree_path"])
         self.assertIsNone(joust_pkg._on_tool_request(tool_name="write_file", args={"path": "calc.py"}, session_id="someone-else"))
 
+    def test_main_repo_path_rewrite_passes_main_repo_root(self) -> None:
+        bout = self._launch()
+        a = bout["contenders"][0]
+        # Escape attempts are clamped inside the worktree by the middleware AND vetoed by pre_tool_call
+        sid = a["subagent_session_id"]
+        out = joust_pkg._on_tool_request(
+            tool_name="write_file", args={"path": "../../outside/escaped.txt", "content": "x"},
+            session_id=sid, tool_call_id="tc-escape",
+        )
+        self.assertTrue(out["args"]["path"].startswith(a["worktree_path"] + "/"))
+        veto = joust_pkg._on_pre_tool_call(tool_name="write_file", args=out["args"], session_id=sid, tool_call_id="tc-escape")
+        self.assertEqual(veto["action"], "block")
+        self.assertIn("outside contender", veto["message"])
+        # A clean call is not vetoed, and the veto was consumed
+        self.assertIsNone(joust_pkg._on_pre_tool_call(tool_name="write_file", args={"path": "calc.py"}, session_id=sid, tool_call_id="tc-ok"))
+
