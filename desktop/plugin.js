@@ -86,7 +86,7 @@ function DiffView({ diffText }) {
   }
   const lines = diffText.split('\n')
   return jsx('pre', {
-    className: 'overflow-x-auto rounded border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) p-3 font-mono text-[11px] leading-relaxed',
+    className: 'overflow-x-auto rounded border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) p-3 font-mono text-[11px] leading-relaxed',
     children: lines.map((line, idx) => {
       let colorClass = 'text-(--ui-text-secondary)'
       if (line.startsWith('+') && !line.startsWith('+++')) {
