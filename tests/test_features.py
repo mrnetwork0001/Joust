@@ -115,3 +115,22 @@ class TestCrossfire(_Base):
 
 
 class TestFlakeShield(_Base):
+    def test_flaky_contender_cannot_win_and_runs_are_recorded(self) -> None:
+        bout = self.launch()
+        bid = bout["bout_id"]
+        # beta's "tests" alternate pass/fail via a marker file; alpha is stable
+        (self.wt(bout, "beta") / "flip.sh").write_text("if [ -f .flip ]; then rm .flip; exit 1; else touch .flip; exit 0; fi\n", encoding="utf-8")
+        cmd = f"if [ -f flip.sh ]; then sh flip.sh; else {sys.executable} -m unittest -q; fi"
+        res = json.loads(tools.joust_evaluate({"bout_id": bid, "runs": 3, "test_command": cmd}))
+        self.assertTrue(res["ok"], res)
+        by = {c["contender_id"]: c for c in res["bout"]["contenders"]}
+        self.assertEqual(len(by["alpha"]["runs"]), 3)
+        self.assertTrue(by["alpha"]["tests_passed"])
+        self.assertFalse(by["alpha"]["flaky"])
+        self.assertTrue(by["beta"]["flaky"])
+        self.assertEqual(by["beta"]["status"], "flaky")
+        self.assertFalse(by["beta"]["tests_passed"])
+        self.assertIn("[Flake Shield]", by["beta"]["test_output"])
+        self.assertEqual(res["winner_id"], "alpha")
+        self.assertEqual(res["bout"]["contenders"][0]["contender_id"], "alpha")
+
