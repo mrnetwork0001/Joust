@@ -418,3 +418,34 @@ class TestHermesChain(unittest.TestCase):
         self.assertTrue(judged["tests_passed"])
         self.assertGreaterEqual(judged["duration_ms"], 1000.0)
 
+    def test_10_post_tool_call_via_lifecycle_invoke_hook_counts_contender_activity(self) -> None:
+        from hermes_cli import plugins_dispatch
+        from hermes_cli.lifecycle import invoke_hook
+
+        self.assertIn("post_tool_call", plugins_dispatch._HOOK_TIMEOUT_BOUNDED_HOOKS)
+        repo = _make_repo(Path(self._tmp.name))
+        bout = self._launch(repo)["bout"]
+        self._start_hook(bout["bout_id"], "plus-operator", "chain-sess-E", "sa-E")
+
+        seen: Dict[str, Any] = {}
+
+        def spy(**kwargs: Any) -> None:
+            seen["thread"] = threading.current_thread()
+
+        self.manager._hooks["post_tool_call"].append(spy)
+        try:
+            for i, sid in enumerate(("chain-sess-E", "chain-sess-E", "not-a-contender")):
+                # The exact payload model_tools._emit_post_tool_call_hook sends.
+                invoke_hook(
+                    "post_tool_call", tool_name="read_file", args={"path": "calc.py"}, result="{}", task_id="",
+                    session_id=sid, tool_call_id=f"call-{i}", turn_id="turn-1", api_request_id="", duration_ms=3,
+                    status="ok", error_type=None, error_message=None, middleware_trace=[],
+                )
+        finally:
+            self.manager._hooks["post_tool_call"].remove(spy)
+        self.assertIsNot(seen["thread"], threading.current_thread(), "bounded hooks run on a daemon worker thread")
+        counts = {c["contender_id"]: c["tool_calls_count"] for c in self.engine.get_bout_details(bout["bout_id"])["contenders"]}
+        self.assertEqual(counts, {"plus-operator": 2, "sum-builtin": 0})
+
+    # ---- 5. slash command and CLI subcommand as Hermes invokes them --------------------------------------
+
