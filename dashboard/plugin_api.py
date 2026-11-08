@@ -14,8 +14,19 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-if str(_PLUGIN_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PLUGIN_ROOT))
+_ENGINE_CACHE: Dict[str, Any] = {}
+
+
+def _load_engine() -> Any:
+    if "engine" in _ENGINE_CACHE:
+        return _ENGINE_CACHE["engine"]
+    spec = importlib.util.spec_from_file_location("hermes_plugin_joust_worktree_engine", _PLUGIN_ROOT / "worktree_engine.py")
+    if spec is None or spec.loader is None:
+        raise ImportError("Joust worktree_engine.py could not be located next to dashboard/")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # worktree_engine has no relative imports, so no sys.modules entry is needed
+    _ENGINE_CACHE["engine"] = module
+    return module
 
 import worktree_engine  # noqa: E402
 
