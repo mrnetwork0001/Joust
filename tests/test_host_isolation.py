@@ -375,3 +375,55 @@ class TestRelayedHookThreading(_JoustCase):
         self.assertEqual(finished, [True, True], "subagent_start could not complete while launch() waited")
 
 
+class TestRegisterInHostLikeContext(unittest.TestCase):
+    """``register(ctx)`` against a context shaped like the host's ``RemotePluginContext``."""
+
+    class _RecordingCtx:
+        def __init__(self) -> None:
+            self.calls: Dict[str, List[Any]] = {}
+
+        def _record(self, kind: str, *args: Any, **kwargs: Any) -> None:
+            self.calls.setdefault(kind, []).append((args, kwargs))
+
+        def register_tool(self, **kwargs: Any) -> None:
+            self._record("tool", **kwargs)
+
+        def register_middleware(self, kind: str, cb: Any) -> None:
+            self._record("middleware", kind, cb)
+
+        def register_hook(self, name: str, cb: Any) -> None:
+            self._record("hook", name, cb)
+
+        def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
+            self._record("command", name, handler, **kwargs)
+
+        def register_cli_command(self, *args: Any, **kwargs: Any) -> None:
+            # RemotePluginContext: logs "ctx.register_cli_command() is skipped in the plugin host" and returns None.
+            self._record("cli_skipped")
+
+        def register_skill(self, name: str, path: Any, **kwargs: Any) -> None:
+            self._record("skill", name, str(path), **kwargs)
+
+        def get_config(self, key: str, default: Any = None) -> Any:
+            return default
+
+    def test_register_skips_cli_but_wires_tools_hooks_middleware_and_slash(self) -> None:
+        ctx = self._RecordingCtx()
+        try:
+            joust_pkg.register(ctx)
+            self.assertIs(tools._CTX_REF, ctx)
+        finally:
+            tools.set_context(None)
+        tool_names = sorted(kw["name"] for _, kw in ctx.calls["tool"])
+        self.assertEqual(tool_names, ["joust_crossfire", "joust_diff", "joust_evaluate", "joust_launch", "joust_merge",
+                                      "joust_report", "joust_status", "joust_steer"])
+        self.assertEqual([a[0] for a, _ in ctx.calls["middleware"]], ["tool_request"])
+        self.assertEqual(sorted(a[0] for a, _ in ctx.calls["hook"]), ["post_tool_call", "pre_tool_call", "subagent_start", "subagent_stop"])
+        self.assertEqual([a[0] for a, _ in ctx.calls["command"]], ["joust"])
+        self.assertEqual(len(ctx.calls["cli_skipped"]), 1)
+        self.assertEqual([a[0] for a, _ in ctx.calls.get("skill", [])], ["joust-arena"])
+        for _, kw in ctx.calls["tool"]:
+            self.assertTrue(callable(kw["handler"]))
+            json.dumps(kw["schema"])  # schemas must be JSON (they cross the wire in host mode)
+
+
