@@ -116,3 +116,13 @@ class TestSubagentFlow(unittest.TestCase):
         self.assertTrue(res["ok"], msg=raw)
         return res["bout"]
 
+    def test_launch_binds_child_sessions_from_subagent_start(self) -> None:
+        bout = self._launch()
+        self.assertEqual(len(self.ctx.subagent_lifecycle.launched), 2)
+        goals = [r["goal"] for r in self.ctx.subagent_lifecycle.launched]
+        self.assertTrue(all("joust:bout=" in g for g in goals))
+        for c in bout["contenders"]:
+            self.assertEqual(c["status"], "running")
+            self.assertTrue(c["subagent_session_id"].startswith("child-sess-"), c)
+            self.assertEqual(worktree_engine.get_session_worktree(c["subagent_session_id"]), c["worktree_path"])
+
