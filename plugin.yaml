@@ -4,6 +4,8 @@ description: "Parallel Git-worktree subagent arena, deterministic benchmark judg
 author: "mrnetwork"
 license: MIT
 requires_hermes: ">=0.22.5"
+homepage: https://github.com/mrnetwork0001/Joust
+tags: [coding, git, subagents, benchmark, desktop]
 provides_tools:
   - joust_launch
   - joust_evaluate
