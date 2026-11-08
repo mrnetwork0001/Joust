@@ -92,7 +92,15 @@ JOUST_EVALUATE = {
             },
             "timeout_seconds": {
                 "type": "integer",
-                "description": "Timeout in seconds per contender benchmark run (default: 60).",
+                "description": "Clamped to 5..600 seconds. Timeout in seconds per contender benchmark run (default: 60).",
+            },
+            "runs": {
+                "type": "integer",
+                "description": "Flake Shield: run the command this many times (1-7). Every run must pass; speed uses the median; mixed results mark the contender flaky (cannot win).",
+            },
+            "persist_test_command": {
+                "type": "boolean",
+                "description": "If true, a test_command override replaces the bout's stored command for later judges (default: one-shot).",
             },
         },
         "required": ["bout_id"],
