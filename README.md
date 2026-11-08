@@ -20,6 +20,19 @@
 
 ---
 
+## 🎯 What Makes a Joust Different From a Race
+
+- **Crossfire (`joust_crossfire`).** Each contender's new or changed test files are fired at every rival worktree (copied under a `__xfire_<contender>` suffix, run, removed). A contender *survives* a rival when it passes that rival's tests, and survival rate is the first tiebreak on the leaderboard: the winner has to beat its rivals' tests, not just its own. In the demo, `hash-bucket-index` ships a partial-fill test that `bisect-sorted-book` fails, and `bisect-sorted-book` ships a zero-quantity test that `naive-filter-scan` fails.
+- **Flake Shield (`joust_evaluate runs=N`).** The verification command runs N times (1–7, config `default_runs`); every run must pass, the speed score uses the **median**, and a mixed pass/fail record marks the contender `flaky`, which can never win. The demo judges each contender three times.
+- **Nothing is lost (`joust_report`, `keep_losers`).** Before a merge or cleanup every contender, winner included, is snapshotted as a `joust/<bout>/<contender>` branch in your repository (built with `commit-tree`, so worktree HEADs never move), and a markdown bout report (scoreboard, Flake Shield runs, Crossfire matrix, diffs, outputs, timeline) is written under `plugin-data/joust/reports/` or to a path inside the repo.
+- **Model vs model.** Give each contender its own `model` in `joust_launch`; the child subagent runs on it, and the card, page and report show which model produced which attempt, so a bout can compare models as well as approaches.
+
+```json
+{"title": "Fix the cart discount", "goal": "…", "test_command": "pytest -q", "contenders": [
+  {"name": "hermes-405b", "strategy": "minimal surgical fix", "model": "nousresearch/hermes-4-405b"},
+  {"name": "sonnet", "strategy": "refactor the discount pipeline", "model": "anthropic/claude-sonnet-4-5"}]}
+```
+
 ## 🛠️ Provided Capabilities
 
 | Surface | Name | Purpose |
