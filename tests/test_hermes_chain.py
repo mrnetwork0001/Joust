@@ -269,3 +269,47 @@ class TestHermesChain(unittest.TestCase):
 
     # ---- 3. tool_request middleware through hermes_cli.middleware ---------------------------------------
 
+    def test_05_apply_tool_request_middleware_jails_bound_session(self) -> None:
+        from hermes_cli.middleware import apply_tool_request_middleware
+
+        repo = _make_repo(Path(self._tmp.name))
+        bout = self._launch(repo)["bout"]
+        a = self._contenders(bout)["plus-operator"]
+        self.assertTrue(self.engine.bind_contender_subagent(bout["bout_id"], "plus-operator", "chain-sess-A", "sa-A"))
+
+        args = {"path": "calc.py", "content": "x"}
+        res = apply_tool_request_middleware(
+            "write_file", args, session_id="chain-sess-A", task_id="", tool_call_id="t1", turn_id="", api_request_id="",
+        )
+        self.assertEqual(res.payload["path"], str(Path(a["worktree_path"]) / "calc.py"))
+        self.assertEqual(res.payload["content"], "x")
+        self.assertTrue(res.changed)
+        self.assertEqual(len(res.trace), 1, res.trace)
+        self.assertEqual(res.trace[0]["source"], "joust")
+        self.assertTrue(res.trace[0]["reason"].startswith("Joust isolated write_file"), res.trace)
+        self.assertEqual(res.original_payload, {"path": "calc.py", "content": "x"})
+        self.assertEqual(args, {"path": "calc.py", "content": "x"}, "Hermes hands the plugin a copy; caller args stay intact")
+
+        # Absolute path into the MAIN repo is redirected into the contender's worktree.
+        res_abs = apply_tool_request_middleware(
+            "read_file", {"path": str(repo / "calc.py")}, session_id="chain-sess-A", task_id="", tool_call_id="t2",
+            turn_id="", api_request_id="",
+        )
+        self.assertEqual(res_abs.payload["path"], str(Path(a["worktree_path"]) / "calc.py"))
+        self.assertEqual(res_abs.trace[0]["source"], "joust")
+
+        # Terminal gets its workdir pinned to the worktree.
+        res_term = apply_tool_request_middleware(
+            "terminal", {"command": "ls"}, session_id="chain-sess-A", task_id="", tool_call_id="t3", turn_id="", api_request_id="",
+        )
+        self.assertEqual(res_term.payload, {"command": "ls", "workdir": a["worktree_path"]})
+        self.assertEqual(res_term.trace[0]["source"], "joust")
+
+        # An unbound session's arguments come back untouched.
+        res_other = apply_tool_request_middleware(
+            "write_file", {"path": "calc.py", "content": "x"}, session_id="someone-else", task_id="", tool_call_id="t4",
+            turn_id="", api_request_id="",
+        )
+        self.assertEqual(res_other.payload, {"path": "calc.py", "content": "x"})
+        self.assertNotIn("joust", [t.get("source") for t in res_other.trace])
+
