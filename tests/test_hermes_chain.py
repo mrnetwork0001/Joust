@@ -219,3 +219,18 @@ class TestHermesChain(unittest.TestCase):
         self.assertEqual(ctx.plugin_id, "joust")
         self.assertEqual(ctx.get_config("default_timeout_seconds", 60), 60)
 
+    def test_02_cli_enable_wrote_config_and_plugins_list_sees_it(self) -> None:
+        from hermes_cli.config import load_config_readonly
+
+        enabled = (load_config_readonly() or {}).get("plugins", {}).get("enabled")
+        self.assertIn("joust", enabled or [], enabled)
+        proc = subprocess.run(
+            [*_hermes_cli_argv(), "plugins", "list"],
+            env={**os.environ, "HERMES_HOME": str(self.home)}, capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("joust", proc.stdout)
+        self.assertIn("enabled", proc.stdout)
+
+    # ---- 2. tool dispatch through the registry / ctx.dispatch_tool -------------------------------------
+
