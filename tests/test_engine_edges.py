@@ -119,3 +119,136 @@ class _EngineEdgeCase(unittest.TestCase):
 # ====================================================================================================
 # joust_merge: apply / dry_run / rollback / cleanup lifecycle
 # ====================================================================================================
+class TestMergeLifecycle(_EngineEdgeCase):
+    def _winner_bout(self):
+        repo = _make_repo(self.tmp)
+        bout = self.launch(repo)
+        wt = self.worktrees(bout)
+        (wt["alpha"] / "calc.py").write_text(_FIXED_CALC, encoding="utf-8")
+        res = self.evaluate(bout["bout_id"])
+        self.assertEqual(res["winner_id"], "alpha")
+        return repo, bout["bout_id"], wt
+
+    def test_zero_diff_contender_is_refused_for_dry_run_and_apply(self) -> None:
+        _, bid, _ = self._winner_bout()
+        for action in ("dry_run", "apply"):
+            res = self.merge(bid, action, "beta")
+            self.assertFalse(res["ok"], res)
+            self.assertIn("no file changes", res["error"])
+
+    def test_conflicting_upstream_change_fails_cleanly_and_leaves_tree_untouched(self) -> None:
+        repo, bid, _ = self._winner_bout()
+        (repo / "calc.py").write_text("def add(a, b):\n    return a * b  # upstream\n", encoding="utf-8")
+        before = (repo / "calc.py").read_text(encoding="utf-8")
+
+        dry = self.merge(bid, "dry_run")
+        self.assertFalse(dry["ok"])
+        self.assertFalse(dry["clean_apply"])
+        self.assertIn("patch does not apply", dry["message"])
+
+        ap = self.merge(bid, "apply")
+        self.assertFalse(ap["ok"])
+        self.assertIn("Patch conflict", ap["error"])
+        self.assertEqual((repo / "calc.py").read_text(encoding="utf-8"), before)
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout, " M calc.py\n")
+        self.assertEqual(eng.get_bout_details(bid)["status"], "evaluated")
+
+    def test_rollback_before_any_merge_is_a_clear_error(self) -> None:
+        _, bid, _ = self._winner_bout()
+        res = self.merge(bid, "rollback")
+        self.assertFalse(res["ok"])
+        self.assertRegex(res["error"], "No rollback patch|no merged contender")
+
+    def test_apply_twice_and_rollback_twice_are_idempotent_and_safe(self) -> None:
+        repo, bid, _ = self._winner_bout()
+        ap1 = self.merge(bid, "apply")
+        self.assertTrue(ap1["ok"], ap1)
+        self.assertEqual(ap1["merged_contender_id"], "alpha")
+        self.assertTrue(Path(ap1["backup_patch_path"]).is_file())
+        self.assertEqual((repo / "calc.py").read_text(encoding="utf-8"), _FIXED_CALC)
+
+        ap2 = self.merge(bid, "apply")  # second apply must not double-apply or corrupt
+        self.assertFalse(ap2["ok"])
+        self.assertEqual((repo / "calc.py").read_text(encoding="utf-8"), _FIXED_CALC)
+        self.assertEqual(eng.get_bout_details(bid)["status"], "merged")
+        self.assertTrue(Path(ap1["backup_patch_path"]).is_file())
+
+        rb1 = self.merge(bid, "rollback")
+        self.assertTrue(rb1["ok"], rb1)
+        self.assertIn("a - b", (repo / "calc.py").read_text(encoding="utf-8"))
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout, "")
+        self.assertEqual(eng.get_bout_details(bid)["status"], "evaluated")
+
+        rb2 = self.merge(bid, "rollback")  # nothing left to revert
+        self.assertFalse(rb2["ok"])
+        self.assertIn("a - b", (repo / "calc.py").read_text(encoding="utf-8"))
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout, "")
+
+    def test_cleanup_removes_worktrees_and_is_idempotent(self) -> None:
+        repo, bid, wt = self._winner_bout()
+        cl = self.merge(bid, "cleanup")
+        self.assertTrue(cl["ok"])
+        self.assertEqual(sorted(cl["removed_worktrees"]), sorted(str(p) for p in wt.values()))
+        self.assertFalse(any(p.exists() for p in wt.values()))
+        listed = _git(repo, "worktree", "list").stdout.strip().splitlines()
+        self.assertEqual(len(listed), 1, listed)  # only the main checkout remains registered
+        again = self.merge(bid, "cleanup")
+        self.assertTrue(again["ok"])
+        self.assertEqual(again["removed_worktrees"], [])
+        self.assertEqual(json.loads(tools.joust_diff({"bout_id": bid}))["diffs"]["alpha"]["diff"], "")
+
+    def test_new_file_and_deletion_patches_apply_and_roll_back(self) -> None:
+        repo = _make_repo(self.tmp, broken=False)
+        bout = self.launch(repo, names=("adder", "remover"))
+        wt = self.worktrees(bout)
+        (wt["adder"] / "big.py").write_text("".join(f"x{i} = {i}\n" for i in range(500)), encoding="utf-8")
+        (wt["remover"] / "test_calc.py").unlink()
+        bid = bout["bout_id"]
+        res = self.evaluate(bid)
+        stats = self.by_id(res)
+        self.assertEqual((stats["adder"]["files_changed"], stats["adder"]["insertions"]), (1, 500))
+        self.assertEqual((stats["remover"]["files_changed"], stats["remover"]["deletions"]), (1, 6))
+
+        self.assertTrue(self.merge(bid, "apply", "adder")["ok"])
+        self.assertTrue((repo / "big.py").exists())
+        self.assertTrue(self.merge(bid, "rollback")["ok"])
+        self.assertFalse((repo / "big.py").exists())
+
+        self.assertTrue(self.merge(bid, "apply", "remover")["ok"])
+        self.assertFalse((repo / "test_calc.py").exists())
+        self.assertTrue(self.merge(bid, "rollback")["ok"])
+        self.assertTrue((repo / "test_calc.py").exists())
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout, "")
+
+    def test_keep_backup_false_skips_patch_and_rollback_reports_it(self) -> None:
+        class _Ctx:
+            def get_config(self, key: str, default: Any = None) -> Any:
+                return False if key == "keep_backup_patches" else default
+
+        repo, bid, _ = self._winner_bout()
+        tools.set_context(_Ctx())
+        ap = self.merge(bid, "apply")
+        self.assertTrue(ap["ok"], ap)
+        self.assertEqual(ap["backup_patch_path"], "")
+        self.assertEqual((repo / "calc.py").read_text(encoding="utf-8"), _FIXED_CALC)
+        rb = self.merge(bid, "rollback")
+        self.assertFalse(rb["ok"])
+        self.assertIn("No rollback patch", rb["error"])
+
+    def test_merge_without_winner_or_unknown_targets_are_clear_errors(self) -> None:
+        repo = _make_repo(self.tmp)
+        bid = self.launch(repo)["bout_id"]
+        res = self.merge(bid, "apply")
+        self.assertFalse(res["ok"])
+        self.assertIn("no winner", res["error"])
+        res = self.merge(bid, "apply", "nobody")
+        self.assertFalse(res["ok"])
+        self.assertIn("not found", res["error"])
+        res = self.merge("bout-ffffffff", "apply")
+        self.assertFalse(res["ok"])
+        self.assertIn("Unknown bout_id", res["error"])
+
+
+# ====================================================================================================
+# joust_evaluate: judge behaviour under hostile commands and outputs
+# ====================================================================================================
