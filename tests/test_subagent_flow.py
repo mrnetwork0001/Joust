@@ -235,3 +235,11 @@ class TestSubagentFlow(unittest.TestCase):
         self.assertTrue(res["steered_live_subagent"])
         self.assertEqual(self.ctx.subagent_lifecycle.steered, [("sub-2", "Use sum()")])
 
+    def test_binding_survives_in_memory_loss_via_db_fallback(self) -> None:
+        bout = self._launch()
+        a = bout["contenders"][0]
+        with worktree_engine._LOCK:
+            worktree_engine._ACTIVE_SESSION_WORKTREES.clear()
+            worktree_engine._ACTIVE_SESSION_CONTENDERS.clear()
+        self.assertEqual(worktree_engine.get_session_worktree(a["subagent_session_id"]), a["worktree_path"])
+
