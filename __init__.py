@@ -76,11 +76,12 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     bout_id, contender_id = bound
     try:
         conn = worktree_engine.get_db()
-        conn.execute(
-            "UPDATE contenders SET tool_calls_count = tool_calls_count + 1 WHERE bout_id = ? AND contender_id = ?",
-            (bout_id, contender_id),
-        )
-        conn.commit()
+        with worktree_engine._LOCK:
+            conn.execute(
+                "UPDATE contenders SET tool_calls_count = tool_calls_count + 1 WHERE bout_id = ? AND contender_id = ?",
+                (bout_id, contender_id),
+            )
+            conn.commit()
         worktree_engine.notify_desktop("bout.updated", {"bout_id": bout_id})
     except Exception as exc:
         logger.debug("Joust post_tool_call update skipped: %s", exc)
