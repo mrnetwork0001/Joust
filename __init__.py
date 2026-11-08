@@ -107,26 +107,41 @@ _AUTO_JUDGE_THREADS: Dict[str, threading.Thread] = {}
 
 
 def _on_subagent_stop(**kwargs: Any) -> None:
-    """Lifecycle hook: when a contender subagent finishes, optionally auto-evaluate its worktree."""
-    corr_id = str(kwargs.get("correlation_id") or "")
-    session_id = str(kwargs.get("child_session_id") or kwargs.get("session_id") or "")
-    bout_id = ""
-    contender_id = ""
+    """Lifecycle hook: when a contender subagent finishes, auto-judge its worktree (config: auto_evaluate_on_stop).
 
-    if ":" in corr_id and corr_id.startswith("bout-"):
-        bout_id, _, contender_id = corr_id.partition(":")
-    else:
-        bound = worktree_engine.get_session_contender(session_id)
-        if bound:
-            bout_id, contender_id = bound
-
-    if not bout_id or not contender_id:
+    Hermes runs this hook on the caller thread without a timeout, so the benchmark is moved to a daemon
+    thread; only the bookkeeping is synchronous.
+    """
+    session_id = str(kwargs.get("child_session_id") or "")
+    bound = worktree_engine.get_session_contender(session_id)
+    if not bound:
+        return
+    bout_id, contender_id = bound
+    status = str(kwargs.get("child_status") or "")
+    worktree_engine.record_event(bout_id, "contender.subagent_stopped", f"Subagent finished ({status or 'done'}).", contender_id)
+    if not tools._auto_evaluate_on_stop():
         return
 
-    try:
-        worktree_engine.evaluate_bout(bout_id=bout_id, contender_id=contender_id)
-    except Exception as exc:
-        logger.debug("Joust auto-evaluate on subagent_stop skipped: %s", exc)
+    def _judge() -> None:
+        try:
+            tools.evaluate_with_context(bout_id=bout_id, contender_id=contender_id)
+        except Exception as exc:
+            logger.debug("Joust auto-evaluate on subagent_stop skipped: %s", exc)
+        finally:
+            _AUTO_JUDGE_THREADS.pop(f"{bout_id}:{contender_id}", None)
+
+    if tools.auto_judge_synchronously():
+        _judge()
+        return
+    t = threading.Thread(target=_judge, name=f"joust-judge-{contender_id}", daemon=True)
+    _AUTO_JUDGE_THREADS[f"{bout_id}:{contender_id}"] = t
+    t.start()
+
+
+def wait_for_auto_judges(timeout: float = 30.0) -> None:
+    """Test/CLI helper: block until background auto-judges finish."""
+    for t in list(_AUTO_JUDGE_THREADS.values()):
+        t.join(timeout)
 
 
 def _handle_slash_joust(raw_args: str, **kwargs: Any) -> str:
