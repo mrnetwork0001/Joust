@@ -194,6 +194,10 @@ JOUST_MERGE = {
                     "'cleanup' removes ephemeral worktrees for the bout."
                 ),
             },
+            "keep_losers": {
+                "type": "boolean",
+                "description": "Before apply/cleanup, keep every contender as a joust/<bout>/<contender> branch in the repository (default: config keep_loser_branches).",
+            },
         },
         "required": ["bout_id"],
     },
