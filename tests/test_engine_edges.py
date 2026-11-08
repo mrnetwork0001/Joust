@@ -541,3 +541,120 @@ class TestLaunchEdges(_EngineEdgeCase):
 # ====================================================================================================
 # Middleware path jail
 # ====================================================================================================
+class TestPathJail(_EngineEdgeCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = _make_repo(self.tmp)
+        (self.repo / "src" / "pkg").mkdir(parents=True)
+        (self.repo / "src" / "pkg" / "mod.py").write_text("X = 1\n", encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "pkg")
+        self.bout = self.launch(self.repo, names=("alpha", "beta"))
+        self.wt = self.worktrees(self.bout)
+        self.A, self.B = self.wt["alpha"], self.wt["beta"]
+        self.sid = f"edge-sess-{os.getpid()}-{id(self)}"
+        eng.bind_session_worktree(self.sid, self.bout["bout_id"], "alpha", str(self.A))
+
+    def mw(self, tool: str, args: Any, sid: Optional[str] = None) -> Dict[str, Any]:
+        return joust_pkg._on_tool_request(
+            tool_name=tool, args=args, session_id=sid or self.sid, task_id="", tool_call_id="tc", turn_id="", api_request_id=""
+        )
+
+    def assert_inside_alpha(self, path: str) -> None:
+        self.assertTrue(Path(path).is_relative_to(self.A.resolve()), path)
+        self.assertNotEqual(Path(path).resolve(), self.A.resolve().parent)
+
+    def test_symlink_pointing_outside_is_clamped(self) -> None:
+        (self.A / "evil_link").symlink_to("/etc")
+        out = self.mw("read_file", {"path": "evil_link/hosts"})["args"]["path"]
+        self.assert_inside_alpha(out)
+        self.assertNotEqual(Path(out).resolve(), Path("/etc/hosts"))
+        with self.assertRaises(ValueError):
+            eng._jail_path_inside_worktree("evil_link/hosts", self.A)
+
+    def test_tilde_dotdot_and_absolute_system_paths_are_clamped(self) -> None:
+        for raw in ("~/x.txt", "../../etc/passwd", "a/../../b", "/etc/passwd", "/", "~"):
+            out = self.mw("write_file", {"path": raw, "content": "c"})
+            self.assert_inside_alpha(out["args"]["path"])
+            self.assertEqual(out["source"], "joust")
+
+    def test_sibling_contender_worktree_is_not_reachable(self) -> None:
+        out = self.mw("write_file", {"path": str(self.B / "calc.py"), "content": "pwn"})["args"]["path"]
+        self.assert_inside_alpha(out)
+        self.assertFalse(Path(out).is_relative_to(self.B.resolve()))
+        out = self.mw("terminal", {"command": "ls", "workdir": str(self.B)})["args"]["workdir"]
+        self.assert_inside_alpha(out)
+
+    def test_main_repo_paths_map_into_the_worktree(self) -> None:
+        out = self.mw("read_file", {"path": str(self.repo / "calc.py")})["args"]["path"]
+        self.assertEqual(Path(out), (self.A / "calc.py").resolve())
+        # Engine-level API with the main repo root preserves nested structure.
+        rewritten, reason, violations = eng.rewrite_tool_args_for_worktree(
+            "read_file", {"path": str(self.repo / "src" / "pkg" / "mod.py")}, str(self.A), str(self.repo)
+        )
+        self.assertEqual(violations, [])
+        self.assertEqual(Path(rewritten["path"]), (self.A / "src" / "pkg" / "mod.py").resolve())
+        self.assertIn("joust isolated read_file".lower(), (reason or "").lower())
+
+    def test_relative_paths_and_dot_resolve_inside_worktree(self) -> None:
+        self.assertEqual(Path(self.mw("read_file", {"path": "."})["args"]["path"]), self.A.resolve())
+        self.assertEqual(Path(self.mw("search_files", {"pattern": "x", "path": "."})["args"]["path"]), self.A.resolve())
+        self.assertEqual(
+            Path(self.mw("patch", {"path": "calc.py", "old_string": "a", "new_string": "b"})["args"]["path"]),
+            (self.A / "calc.py").resolve(),
+        )
+        out = self.mw("write_file", {"path": "src/pkg/new.py", "content": ""})["args"]["path"]
+        self.assertEqual(Path(out), (self.A / "src" / "pkg" / "new.py").resolve())
+
+    def test_terminal_workdir_is_pinned_and_cwd_key_rewritten(self) -> None:
+        out = self.mw("terminal", {"command": "ls"})["args"]
+        self.assertEqual(Path(out["workdir"]), self.A.resolve())
+        self.assertEqual(out["command"], "ls")
+        out = self.mw("terminal", {"command": "ls", "cwd": "/"})["args"]
+        self.assert_inside_alpha(out["cwd"])
+        self.assertNotIn("workdir", out)  # explicit cwd respected, no duplicate key injected
+
+    def test_empty_none_non_string_and_non_dict_args_pass_through(self) -> None:
+        for args in ({"path": ""}, {"path": None}, {"path": 5}, {"content": "no path key"}):
+            # Nothing to rewrite -> None, so Hermes records no plugin rewrite for the call.
+            self.assertIsNone(joust_pkg._on_tool_request(tool_name="read_file", args=dict(args), session_id=self.sid))
+        self.assertIsNone(joust_pkg._on_tool_request(tool_name="read_file", args=None, session_id=self.sid))
+        self.assertIsNone(joust_pkg._on_tool_request(tool_name="read_file", args=["x"], session_id=self.sid))
+
+    def test_unbound_session_is_untouched(self) -> None:
+        out = joust_pkg._on_tool_request(tool_name="write_file", args={"path": "../escape.py"}, session_id="nobody-bound")
+        self.assertIsNone(out)
+
+    def test_steer_write_files_refuses_escapes_and_writes_nothing_outside(self) -> None:
+        res = json.loads(
+            tools.joust_steer(
+                {
+                    "bout_id": self.bout["bout_id"],
+                    "contender_id": "alpha",
+                    "guidance": "g",
+                    "write_files": {"../../escape.txt": "x", "/etc/joust_escape.txt": "y"},
+                }
+            )
+        )
+        self.assertFalse(res["ok"])
+        self.assertIn("escapes isolated Joust worktree", res["error"])
+        self.assertFalse((self.A.parent / "escape.txt").exists())
+        self.assertFalse((self.A.parent.parent / "escape.txt").exists())
+        self.assertFalse(Path("/etc/joust_escape.txt").exists())
+        ok = json.loads(
+            tools.joust_steer(
+                {"bout_id": self.bout["bout_id"], "contender_id": "alpha", "guidance": "g", "write_files": {"ok/inner.txt": "z"}}
+            )
+        )
+        self.assertTrue(ok["ok"], ok)
+        self.assertEqual(ok["written_files"], ["ok/inner.txt"])
+        self.assertEqual((self.A / "ok" / "inner.txt").read_text(encoding="utf-8"), "z")
+
+    def test_worktree_path_with_trailing_slash(self) -> None:
+        rewritten, _, _ = eng.rewrite_tool_args_for_worktree("read_file", {"path": "calc.py"}, str(self.A) + "/")
+        self.assertEqual(Path(rewritten["path"]), (self.A / "calc.py").resolve())
+
+
+# ====================================================================================================
+# SQLite / data-dir handling
+# ====================================================================================================
