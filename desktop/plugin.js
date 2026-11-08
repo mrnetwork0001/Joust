@@ -41,6 +41,35 @@ function navigateTo(path) {
   }
 }
 
+// Live updates arrive as plugin events in in-process mode; with plugins.isolation: host the broadcast
+// cannot cross the plugin-host boundary, so every live surface also polls (only while visible).
+const POLL_MS = 4000
+function subscribeLive(ctx, boutId, refresh) {
+  const stop = ctx.onEvent('plugin.joust.bout.updated', evt => {
+    if (!boutId || !evt?.payload?.bout_id || evt.payload.bout_id === boutId) refresh()
+  })
+  const timer = setInterval(() => {
+    if (typeof document === 'undefined' || document.visibilityState !== 'hidden') refresh()
+  }, POLL_MS)
+  return () => {
+    if (typeof stop === 'function') stop()
+    clearInterval(timer)
+  }
+}
+
+// Judging executes test commands, so the UI hands it to the agent (Hermes approval gates apply)
+// instead of running it from an HTTP click. Returns true when a prompt was submitted.
+function requestJudge(ctx, boutId, sessionId) {
+  return ctx.rest('/bouts/' + encodeURIComponent(boutId) + '/evaluate', { method: 'POST', body: {} })
+    .then(res => {
+      const prompt = (res && res.prompt) || ('Re-judge Joust bout ' + boutId + ' with joust_evaluate.')
+      const ok = submitToComposer(sessionId ?? null, prompt)
+      if (ok) notifyUser('info', 'Asked the agent to re-judge ' + boutId + ' (approvals apply).')
+      else notifyUser('warning', 'Open a chat session so the agent can judge ' + boutId + '.')
+      return ok
+    })
+}
+
 function submitToComposer(sessionId, promptText) {
   if (sdk.host && sdk.host.composer && typeof sdk.host.composer.submit === 'function') {
     return sdk.host.composer.submit(sessionId ?? null, promptText)
