@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import difflib
+import fnmatch
 import json
 import os
 import re
 import shlex
 import shutil
+import statistics
 import sqlite3
 import subprocess
 import threading
