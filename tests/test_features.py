@@ -196,3 +196,18 @@ class TestDemoShowcasesFeatures(unittest.TestCase):
         eng.close_cached_dbs()
         self._tmp.cleanup()
 
+    def test_demo_runs_flake_shield_and_crossfire(self) -> None:
+        res = json.loads(tools.joust_status({"run_demo": True}))
+        self.assertTrue(res["ok"], res)
+        by = {c["contender_id"]: c for c in res["bout"]["contenders"]}
+        self.assertEqual(res["bout"]["winner_id"], "hash-bucket-index")
+        self.assertEqual(len(by["hash-bucket-index"]["runs"]), 3)
+        self.assertFalse(any(c["flaky"] for c in by.values()))
+        self.assertEqual((by["hash-bucket-index"]["crossfire_survived"], by["hash-bucket-index"]["crossfire_total"]), (1, 1))
+        self.assertEqual((by["bisect-sorted-book"]["crossfire_survived"], by["bisect-sorted-book"]["crossfire_total"]), (0, 1))
+        self.assertEqual((by["naive-filter-scan"]["crossfire_survived"], by["naive-filter-scan"]["crossfire_total"]), (0, 2))
+        self.assertEqual({c["model"] for c in by.values()}, {"nousresearch/hermes-4-405b", "claude-sonnet-4-5", "gpt-4.1-mini"})
+
+
+if __name__ == "__main__":
+    unittest.main()
