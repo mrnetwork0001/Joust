@@ -114,3 +114,4 @@ class TestCrossfire(_Base):
         self.assertEqual(eng._crossfire_name("tests/test_x", "a"), "tests/test_x__xfire_a")
 
 
+class TestFlakeShield(_Base):
