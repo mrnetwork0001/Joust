@@ -324,3 +324,54 @@ class TestHostRestartRecovery(_JoustCase):
         self.assertIsNone(worktree_engine.get_session_worktree(a["subagent_session_id"]))
 
 
+class TestRelayedHookThreading(_JoustCase):
+    """In host mode the ``subagent_start`` hook that Hermes fires *inside* ``launch()`` is relayed back to the
+    plugin host and served on a different thread than the one running ``create_bout``."""
+
+    def _relaying_lifecycle(self, wait_seconds: float) -> tuple:
+        threads: List[threading.Thread] = []
+        finished_before_return: List[bool] = []
+
+        class Relayed(_FakeLifecycle):
+            def launch(inner, request: Any) -> Any:
+                req = dict(request)
+                inner.counter += 1
+                sid, sub_id = f"child-sess-{inner.counter}", f"sub-{inner.counter}"
+                t = threading.Thread(
+                    target=joust_pkg._on_subagent_start, kwargs=dict(
+                        parent_session_id="parent-sess", parent_turn_id="turn-1", parent_subagent_id="",
+                        child_session_id=sid, child_subagent_id=sub_id, child_role="leaf", child_goal=req["goal"]),
+                    daemon=True, name="relayed-subagent-start")
+                threads.append(t)
+                t.start()
+                t.join(timeout=wait_seconds)  # Hermes would block here until the hook returns
+                finished_before_return.append(not t.is_alive())
+                inner.launched.append(req)
+                return _plain_handle(sub_id, req.get("correlation_id"))
+
+        return Relayed(), threads, finished_before_return
+
+    def test_relayed_subagent_start_binding_is_eventually_consistent(self) -> None:
+        lifecycle, threads, _ = self._relaying_lifecycle(wait_seconds=1.0)
+        bout = self._launch(_FakeCtx(lifecycle))
+        for t in threads:
+            t.join(timeout=10)
+            self.assertFalse(t.is_alive(), "relayed subagent_start never completed")
+        rows = self._handle_rows(bout["bout_id"])
+        sessions = {cid: row["subagent_session_id"] for cid, row in rows.items()}
+        self.assertEqual(set(sessions.values()), {"child-sess-1", "child-sess-2"}, sessions)
+        for cid, sid in sessions.items():
+            self.assertEqual(worktree_engine.get_session_contender(sid), (bout["bout_id"], cid))
+
+    def test_known_hazard_relayed_hook_completes_while_launch_waits(self) -> None:
+        """Documents a known host-mode hazard: ``create_bout`` holds ``worktree_engine._LOCK`` across
+        ``service.launch()``, so a ``subagent_start`` served on another thread blocks in ``get_db()`` until
+        the lock is released — with the real plugin host that is a deadlock (launch() waits for the hook, the
+        hook waits for the lock). Remove the ``expectedFailure`` once launch() runs outside the lock."""
+        lifecycle, threads, finished = self._relaying_lifecycle(wait_seconds=1.0)
+        self._launch(_FakeCtx(lifecycle))
+        for t in threads:
+            t.join(timeout=10)
+        self.assertEqual(finished, [True, True], "subagent_start could not complete while launch() waited")
+
+
