@@ -186,3 +186,13 @@ class TestBranchesAndReport(_Base):
         self.assertFalse(self.wt(bout, "alpha").exists())
 
 
+class TestDemoShowcasesFeatures(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="joust-demo-")
+        os.environ["HERMES_HOME"] = self._tmp.name
+        tools.set_context(None)
+
+    def tearDown(self) -> None:
+        eng.close_cached_dbs()
+        self._tmp.cleanup()
+
