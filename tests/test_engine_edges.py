@@ -252,3 +252,137 @@ class TestMergeLifecycle(_EngineEdgeCase):
 # ====================================================================================================
 # joust_evaluate: judge behaviour under hostile commands and outputs
 # ====================================================================================================
+class TestEvaluateJudge(_EngineEdgeCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = _make_repo(self.tmp, broken=False)
+        self.bout = self.launch(self.repo)
+        self.bid = self.bout["bout_id"]
+        self.wt = self.worktrees(self.bout)
+
+    def test_timeout_is_honoured_even_with_background_grandchild(self) -> None:
+        t0 = time.perf_counter()
+        res = self.evaluate(self.bid, contender_id="alpha", test_command="sh -c 'sleep 12 & sleep 12'", timeout_seconds=5)
+        elapsed = time.perf_counter() - t0
+        self.assertLess(elapsed, 10.0, "timeout must not wait for the orphaned background child")
+        alpha = self.by_id(res)["alpha"]
+        self.assertEqual(alpha["exit_code"], 124)
+        self.assertIn("timed out", alpha["test_output"])
+        self.assertFalse(alpha["tests_passed"])
+        self.assertEqual(alpha["score_breakdown"]["correctness"], 0.0)
+
+    def test_failing_and_missing_commands_are_recorded_not_raised(self) -> None:
+        res = self.evaluate(self.bid, test_command="sh -c 'echo failing; exit 3'")
+        alpha = self.by_id(res)["alpha"]
+        self.assertEqual((alpha["exit_code"], alpha["status"], alpha["tests_passed"]), (3, "failed", False))
+        self.assertEqual(res["winner_id"], "")
+        self.assertEqual(res["bout"]["status"], "failed_all")
+
+        res = self.evaluate(self.bid, test_command="definitely_not_a_command_xyz --flag")
+        alpha = self.by_id(res)["alpha"]
+        self.assertEqual(alpha["exit_code"], 127)  # /bin/sh: command not found
+        self.assertFalse(alpha["tests_passed"])
+        self.assertIn("definitely_not_a_command_xyz", alpha["test_output"])
+
+    def test_telemetry_overrides_duration_even_on_non_zero_exit(self) -> None:
+        res = self.evaluate(self.bid, test_command="sh -c 'echo JOUST_BENCHMARK_MS=12.5; exit 1'")
+        alpha = self.by_id(res)["alpha"]
+        self.assertEqual(alpha["duration_ms"], 12.5)
+        self.assertFalse(alpha["tests_passed"])
+        self.assertEqual(alpha["score_breakdown"]["correctness"], 0.0)
+        self.assertLessEqual(alpha["score_breakdown"]["speed"], 5.0)
+
+    def test_unparseable_telemetry_falls_back_to_wall_clock(self) -> None:
+        res = self.evaluate(self.bid, test_command="sh -c 'echo JOUST_BENCHMARK_MS=1.2.3'")
+        alpha = self.by_id(res)["alpha"]
+        self.assertGreater(alpha["duration_ms"], 0.0)
+        self.assertNotEqual(alpha["duration_ms"], 1.2)
+        self.assertTrue(alpha["tests_passed"])
+
+    def test_non_utf8_output_is_decoded_with_replacement(self) -> None:
+        res = self.evaluate(self.bid, test_command="sh -c 'printf \"ok\\xff\\xfe\\x80 done\\n\"'")
+        alpha = self.by_id(res)["alpha"]
+        self.assertEqual(alpha["exit_code"], 0)
+        self.assertTrue(alpha["test_output"].startswith("ok"))
+        self.assertTrue(alpha["test_output"].endswith("done"))
+        self.assertIn("\ufffd", alpha["test_output"])
+        json.dumps(res)  # payload stays JSON-serialisable
+
+    def test_huge_output_is_capped_head_and_tail(self) -> None:
+        res = self.evaluate(self.bid, test_command="sh -c 'head -c 20000 /dev/zero | tr \"\\0\" x; echo; echo TAIL_MARKER; echo JOUST_BENCHMARK_MS=42'")
+        alpha = self.by_id(res)["alpha"]
+        self.assertEqual(alpha["exit_code"], 0)
+        self.assertLessEqual(len(alpha["test_output"]), 8200)
+        self.assertIn("[Joust truncated", alpha["test_output"])
+        self.assertIn("TAIL_MARKER", alpha["test_output"])  # the tail (where failures print) survives
+        self.assertEqual(alpha["duration_ms"], 42.0)  # telemetry parsed from the full output
+
+    def test_evaluate_by_name_and_unknown_bout(self) -> None:
+        bout = self.launch(self.repo, names=("Fast Path", "slow-path"))
+        res = self.evaluate(bout["bout_id"], contender_id="Fast Path")
+        self.assertEqual(self.by_id(res)["fast-path"]["status"], "passed")
+        self.assertTrue(self.by_id(res)["fast-path"]["tests_passed"])
+        unknown = json.loads(tools.joust_evaluate({"bout_id": "bout-ffffffff"}))
+        self.assertFalse(unknown["ok"])
+        self.assertIn("Unknown bout_id", unknown["error"])
+
+    def test_nobody_passes_yields_no_winner_and_blocks_merge(self) -> None:
+        res = self.evaluate(self.bid, test_command="false")
+        self.assertEqual(res["winner_id"], "")
+        self.assertEqual(res["bout"]["status"], "failed_all")
+        for c in res["bout"]["contenders"]:
+            self.assertFalse(c["is_winner"])
+            self.assertEqual(c["score_breakdown"]["correctness"], 0.0)
+            self.assertLessEqual(c["score"], 20.0)
+        merged = self.merge(self.bid, "apply")
+        self.assertFalse(merged["ok"])
+        self.assertIn("no winner", merged["error"])
+
+    def test_exact_tie_is_deterministic_by_launch_order(self) -> None:
+        for wt in self.wt.values():
+            (wt / "bench.sh").write_text("echo JOUST_BENCHMARK_MS=100\n", encoding="utf-8")
+        for _ in range(2):
+            res = self.evaluate(self.bid, test_command="sh bench.sh")
+            ranked = res["bout"]["contenders"]
+            self.assertEqual(ranked[0]["score"], ranked[1]["score"])
+            self.assertEqual(res["winner_id"], "alpha")
+            self.assertEqual(ranked[0]["contender_id"], "alpha")
+            self.assertTrue(ranked[0]["is_winner"])
+            self.assertFalse(ranked[1]["is_winner"])
+
+    def test_scores_are_bounded_and_winner_is_top_ranked(self) -> None:
+        bout = self.launch(self.repo, names=("tiny", "huge", "untouched"))
+        wt = self.worktrees(bout)
+        (wt["tiny"] / "calc.py").write_text("def add(a, b):\n    return a + b  # c\n", encoding="utf-8")
+        (wt["huge"] / "big.py").write_text("".join(f"x{i} = {i}\n" for i in range(20000)), encoding="utf-8")
+        res = self.evaluate(bout["bout_id"])
+        ranked = res["bout"]["contenders"]
+        self.assertEqual(res["winner_id"], ranked[0]["contender_id"])
+        self.assertTrue(ranked[0]["is_winner"])
+        for c in ranked:
+            b = c["score_breakdown"]
+            self.assertGreaterEqual(b["minimalism"], 0.0)
+            self.assertLessEqual(b["minimalism"], 15.0)
+            self.assertLessEqual(b["speed"], 25.0)
+            self.assertGreaterEqual(b["speed"], 0.0)
+            self.assertIn(b["correctness"], (0.0, 60.0))
+            self.assertGreaterEqual(c["score"], 0.0)
+            self.assertLessEqual(c["score"], 100.0)
+            self.assertAlmostEqual(c["score"], round(b["correctness"] + b["speed"] + b["minimalism"], 2), places=2)
+        stats = self.by_id(res)
+        self.assertEqual(stats["untouched"]["score_breakdown"]["minimalism"], 5.0)  # zero diff: partial credit
+        self.assertEqual(stats["tiny"]["score_breakdown"]["minimalism"], 15.0)
+        self.assertGreater(stats["huge"]["score_breakdown"]["minimalism"], 0.0)
+        self.assertLess(stats["huge"]["score_breakdown"]["minimalism"], 1.0)
+
+    def test_timeout_seconds_zero_uses_default_and_bad_value_is_reported(self) -> None:
+        res = json.loads(tools.joust_evaluate({"bout_id": self.bid, "timeout_seconds": 0, "test_command": "true"}))
+        self.assertTrue(res["ok"], res)
+        bad = json.loads(tools.joust_evaluate({"bout_id": self.bid, "timeout_seconds": "abc", "test_command": "true"}))
+        self.assertFalse(bad["ok"])
+        self.assertIn("abc", bad["error"])
+
+
+# ====================================================================================================
+# joust_launch: validation, naming, dirty trees, path forms, copytree fallback
+# ====================================================================================================
