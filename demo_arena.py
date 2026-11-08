@@ -8,10 +8,14 @@ import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
-if str(_ROOT.parent) not in sys.path:
-    sys.path.insert(0, str(_ROOT.parent))
+# Load the plugin package by path so this works from a clone named Joust or an install named joust.
+import importlib.util  # noqa: E402
 
-from Joust import tools  # noqa: E402
+_spec = importlib.util.spec_from_file_location("joust_plugin_demo", _ROOT / "__init__.py", submodule_search_locations=[str(_ROOT)])
+_pkg = importlib.util.module_from_spec(_spec)
+sys.modules["joust_plugin_demo"] = _pkg
+_spec.loader.exec_module(_pkg)
+tools = _pkg.tools
 
 
 def main() -> None:
