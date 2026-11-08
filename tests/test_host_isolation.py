@@ -105,3 +105,35 @@ class _FakeLifecycle:
         return True
 
 
+class _FakeCtx:
+    def __init__(self, lifecycle: Any = None, config: Optional[Dict[str, Any]] = None) -> None:
+        if lifecycle is not None:
+            self.subagent_lifecycle = lifecycle
+        self._config = config or {}
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        return self._config.get(key, default)
+
+
+def _make_repo(root: Path) -> Path:
+    repo = root / "repo"
+    repo.mkdir()
+    (repo / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    (repo / "test_calc.py").write_text(
+        "import unittest\nfrom calc import add\n\nclass T(unittest.TestCase):\n"
+        "    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n", encoding="utf-8",
+    )
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+    for cmd in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-q", "-m", "base"]):
+        subprocess.run(cmd, cwd=repo, check=True, env=env, capture_output=True)
+    return repo
+
+
+def _reset_memory_maps() -> None:
+    with worktree_engine._LOCK:
+        worktree_engine._ACTIVE_SESSION_WORKTREES.clear()
+        worktree_engine._ACTIVE_SESSION_CONTENDERS.clear()
+        worktree_engine._PENDING_SUBAGENT_SESSIONS.clear()
+
+
