@@ -449,3 +449,32 @@ class TestHermesChain(unittest.TestCase):
 
     # ---- 5. slash command and CLI subcommand as Hermes invokes them --------------------------------------
 
+    def test_11_slash_command_through_plugin_command_dispatch(self) -> None:
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
+
+        handler = get_plugin_command_handler("joust")
+        self.assertIsNotNone(handler)
+
+        def run(raw_args: str, **context: Any) -> str:
+            # cli.py: source=None, session_id, session_key, platform="cli"; the gateway adds a live source object.
+            ctx = {"source": None, "session_id": "parent-sess", "session_key": "parent-sess", "platform": "cli", **context}
+            out = resolve_plugin_command_result(invoke_plugin_command(handler, raw_args, **ctx))
+            self.assertIsInstance(out, str)
+            return out
+
+        status = run("status")
+        self.assertIn("Joust", status)
+        demo = run("demo", source=object(), platform="telegram", session_key="telegram:123")
+        self.assertIn("Joust Demo Tournament Completed", demo)
+        self.assertIn('::joust-bout{id="bout-', demo)
+        self.assertIn("hash-bucket-index", demo)
+        repo = _make_repo(Path(self._tmp.name))
+        bout_id = self._launch(repo)["bout_id"]
+        judge = run(f"judge {bout_id}")
+        self.assertIn(f"Evaluated `{bout_id}`", judge)
+        self.assertIn(f'::joust-bout{{id="{bout_id}"}}', judge)
+        # Error path returns text, never raises into the surface.
+        self.assertIn("Joust command error", run("judge bout-doesnotexist"))
+        self.assertEqual(self.hp.get_plugin_commands()["joust"]["plugin"], "joust")
+
