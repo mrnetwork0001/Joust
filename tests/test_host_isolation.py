@@ -237,3 +237,54 @@ class TestRemoteFacadeContracts(_JoustCase):
         self.assertEqual([n["guidance"] for n in notes], ["Try harder"])
 
 
+class TestWireSafety(_JoustCase):
+    """Hook and middleware callbacks accept the full Hermes 0.23 payloads and return JSON-serialisable data."""
+
+    def test_middleware_result_is_json_round_trippable(self) -> None:
+        bout = self._launch(_FakeCtx(_FakeLifecycle()))
+        a = bout["contenders"][0]
+        payload = {
+            "tool_name": "write_file",
+            "args": {"path": "calc.py", "content": "def add(a, b):\n    return a + b\n"},
+            "original_args": {"path": "calc.py", "content": "def add(a, b):\n    return a + b\n"},
+            "task_id": "", "session_id": a["subagent_session_id"], "tool_call_id": "tc-1", "turn_id": "turn-1",
+            "api_request_id": "api-1", "telemetry_schema_version": 1, "middleware_schema_version": 1,
+        }
+        out = joust_pkg._on_tool_request(**payload)
+        wire = json.loads(json.dumps(out))  # what the plugin-host channel does to the return value
+        self.assertEqual(wire, out)
+        self.assertIsInstance(wire["args"]["path"], str)
+        self.assertEqual(wire["args"]["path"], str(Path(a["worktree_path"]) / "calc.py"))
+        self.assertEqual(wire["source"], "joust")
+        self.assertIn("reason", wire)
+        # The payload must not have been mutated in place (Hermes hands each callback a copy, but the wire
+        # codec makes that copy for us in host mode, so the original dict must come back unchanged).
+        self.assertEqual(payload["args"]["path"], "calc.py")
+
+    def test_hooks_accept_full_payloads_and_return_none(self) -> None:
+        bout = self._launch(_FakeCtx(_FakeLifecycle(), config={"auto_evaluate_on_stop": False}))
+        a = bout["contenders"][0]
+        sid = a["subagent_session_id"]
+        self.assertIsNone(joust_pkg._on_post_tool_call(
+            tool_name="read_file", args={"path": "calc.py"}, result="...", session_id=sid, task_id="",
+            tool_call_id="tc-1", turn_id="turn-1", api_request_id="api-1", telemetry_schema_version=1))
+        self.assertIsNone(joust_pkg._on_subagent_start(
+            parent_session_id="parent-sess", parent_turn_id="turn-1", parent_subagent_id="", child_session_id="",
+            child_subagent_id="", child_role="leaf", child_goal="no marker", telemetry_schema_version=1))
+        self.assertIsNone(joust_pkg._on_subagent_stop(
+            parent_session_id="parent-sess", parent_turn_id="turn-1", child_session_id=sid, child_role="leaf",
+            child_summary="done", child_status="completed", tool_call_history=[], duration_ms=12,
+            telemetry_schema_version=1))
+        details = worktree_engine.get_bout_details(bout["bout_id"])
+        counts = {c["contender_id"]: c["tool_calls_count"] for c in details["contenders"]}
+        self.assertEqual(counts["plus-operator"], 1)
+        kinds = [e["event_type"] for e in details["events"]]
+        self.assertIn("contender.subagent_stopped", kinds)
+        # auto_evaluate_on_stop=False must leave the contender unjudged.
+        self.assertEqual([c["status"] for c in details["contenders"] if c["contender_id"] == "plus-operator"], ["running"])
+
+    def test_non_dict_args_pass_through_untouched(self) -> None:
+        self.assertIsNone(joust_pkg._on_tool_request(tool_name="terminal", args=None, session_id="x"))
+        self.assertIsNone(joust_pkg._on_tool_request(tool_name="terminal", args="ls", session_id="x"))
+
+
