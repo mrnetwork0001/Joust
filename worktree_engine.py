@@ -428,38 +428,69 @@ def rewrite_tool_args_for_worktree(
     args: Dict[str, Any],
     worktree_path: str,
     main_repo_path: Optional[str] = None,
-) -> Tuple[Dict[str, Any], Optional[str]]:
-    """Rewrite tool arguments so file and terminal operations stay isolated in the contender worktree."""
+) -> Tuple[Dict[str, Any], Optional[str], List[str]]:
+    """Rewrite tool arguments so file and terminal operations stay inside the contender worktree.
+
+    Returns (args, reason, violations). ``violations`` lists human-readable escape attempts that were
+    clamped; the pre_tool_call hook turns them into a veto so the model learns the boundary.
+    """
     if not isinstance(args, dict) or not worktree_path:
-        return args, None
+        return args, None, []
 
     wt_root = Path(worktree_path).resolve()
     repo_root = Path(main_repo_path).resolve() if main_repo_path else None
     updated = dict(args)
     rewritten_fields: List[str] = []
+    violations: List[str] = []
 
-    for path_key in ("path", "file_path", "filepath", "target_file", "directory", "dir_path", "cwd", "workdir"):
+    def jail(value: str, key: str) -> str:
+        try:
+            return _jail_path_inside_worktree(value, wt_root, repo_root)
+        except ValueError:
+            violations.append(f"{key}={value!r}")
+            if key in _DIR_KEYS:
+                return str(wt_root)
+            # keep a relative tail when the input was relative, otherwise fall back to the basename
+            tail = Path(value).expanduser()
+            if not tail.is_absolute() and ".." not in tail.parts:
+                return str(wt_root / tail)
+            return str(wt_root / Path(value).name)
+
+    for path_key in _PATH_KEYS:
         val = updated.get(path_key)
         if isinstance(val, str) and val.strip():
-            try:
-                jailed = _jail_path_inside_worktree(val, wt_root, repo_root)
-                if jailed != val:
-                    updated[path_key] = jailed
-                    rewritten_fields.append(path_key)
-            except ValueError:
-                # Force relative fallback inside worktree root
-                safe_name = Path(val).name
-                updated[path_key] = str(wt_root / safe_name)
+            jailed = jail(val, path_key)
+            if jailed != val:
+                updated[path_key] = jailed
                 rewritten_fields.append(path_key)
 
-    if tool_name in ("terminal", "bash", "execute_command", "run_command"):
-        if "workdir" not in updated and "cwd" not in updated:
-            updated["workdir"] = str(wt_root)
-            rewritten_fields.append("workdir")
+    if tool_name in _TERMINAL_TOOLS and "workdir" not in updated and "cwd" not in updated:
+        updated["workdir"] = str(wt_root)
+        rewritten_fields.append("workdir")
+
+    if tool_name in _CWD_DEFAULT_TOOLS:
+        cur = updated.get("path")
+        if not isinstance(cur, str) or not cur.strip() or cur.strip() == ".":
+            updated["path"] = str(wt_root)
+            rewritten_fields.append("path")
+
+    if tool_name == "patch" and isinstance(updated.get("patch"), str) and str(updated.get("mode", "patch")) == "patch":
+        body = updated["patch"]
+
+        def _hdr(m: "re.Match[str]") -> str:
+            return m.group(1) + jail(m.group(2), "patch")
+
+        def _mv(m: "re.Match[str]") -> str:
+            return m.group(1) + jail(m.group(2), "patch") + " -> " + jail(m.group(3), "patch")
+
+        new_body = _V4A_MOVE_RE.sub(_mv, _V4A_HEADER_RE.sub(_hdr, body))
+        if new_body != body:
+            updated["patch"] = new_body
+            rewritten_fields.append("patch")
 
     if not rewritten_fields:
-        return args, None
-    return updated, f"Joust isolated {tool_name} ({', '.join(rewritten_fields)}) -> {wt_root.name}"
+        return args, None, violations
+    return updated, f"Joust isolated {tool_name} ({', '.join(dict.fromkeys(rewritten_fields))}) -> {wt_root.name}", violations
 
 
 def record_event(bout_id: str, event_type: str, detail: str, contender_id: str = "") -> None:
