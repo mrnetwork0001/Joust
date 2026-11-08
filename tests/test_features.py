@@ -145,3 +145,30 @@ class TestFlakeShield(_Base):
 
 
 class TestBranchesAndReport(_Base):
+    def test_merge_keeps_every_contender_as_a_branch_and_report_renders(self) -> None:
+        bout = self.launch(alpha={"model": "nousresearch/hermes-4-405b"}, beta={"model": "anthropic/claude-sonnet-4-5"})
+        bid = bout["bout_id"]
+        (self.wt(bout, "alpha") / "calc.py").write_text("def add(a, b):\n    return a + b\n\n\ndef div(a, b):\n    return a / b\n# alpha\n", encoding="utf-8")
+        (self.wt(bout, "beta") / "calc.py").write_text("def add(a, b):\n    return a + b\n\n\ndef div(a, b):\n    return a / b\n# beta\n", encoding="utf-8")
+        (self.wt(bout, "beta") / "notes.txt").write_text("untracked note\n", encoding="utf-8")
+        json.loads(tools.joust_evaluate({"bout_id": bid}))
+        merged = json.loads(tools.joust_merge({"bout_id": bid, "action": "apply", "contender_id": "alpha"}))
+        self.assertTrue(merged["ok"], merged)
+        self.assertEqual(set(merged["kept_branches"]), {"alpha", "beta"})
+        branches = _git(self.repo, "branch", "--list", "joust/*").stdout
+        self.assertIn(f"joust/{bid}/alpha", branches)
+        self.assertIn(f"joust/{bid}/beta", branches)
+        # the loser's branch carries its full state, including the untracked file; worktree HEAD did not move
+        self.assertIn("notes.txt", _git(self.repo, "ls-tree", "--name-only", f"joust/{bid}/beta").stdout)
+        self.assertEqual(_git(self.wt(bout, "beta"), "rev-parse", "HEAD").stdout.strip(), bout["base_commit"])
+        self.assertIn("# alpha", (self.repo / "calc.py").read_text(encoding="utf-8"))
+
+        rep = json.loads(tools.joust_report({"bout_id": bid, "write_path": "docs/joust-report.md", "include_markdown": True}))
+        self.assertTrue(rep["ok"], rep)
+        self.assertTrue((self.repo / "docs" / "joust-report.md").is_file())
+        md = rep["markdown"]
+        for needle in ("# ⚔️ Joust bout report", "| Rank |", "nousresearch/hermes-4-405b", "anthropic/claude-sonnet-4-5", f"joust/{bid}/beta", "## Timeline", "bout.merged"):
+            self.assertIn(needle, md)
+        by = {c["contender_id"]: c for c in eng.get_bout_details(bid)["contenders"]}
+        self.assertEqual(by["beta"]["branch_ref"], f"joust/{bid}/beta")
+
