@@ -72,6 +72,14 @@ Or open **Joust Arena** from the Hermes Desktop sidebar (`/joust`) and click **�
 
 ---
 
+## ✅ Verified Against Hermes 0.23.0
+
+- `hermes plugins validate` passes with no warnings (manifest, capability probe, security scan, no core override, desktop surface); `hermes plugins doctor joust` reports 8 tools and 4 hooks; `hermes plugins enable joust` + `hermes joust demo` run end to end from an installed copy.
+- Only public plugin surfaces are used: `ctx.register_*`, `ctx.subagent_lifecycle`, `ctx.dispatch_tool("terminal", …)`, `hermes_cli.plugin_events.broadcast_plugin_event`, and the Desktop plugin SDK. No private core imports, no `sys.path` or `sys.modules` tricks.
+- `python3 -m unittest discover -s tests` runs 90+ tests on the plain interpreter and 30 more when Hermes is importable: the demo tournament with merge and rollback; the live-subagent path driven with the exact kwargs Hermes passes (`subagent_start` binding inside `launch()`, per-session path jailing incl. V4A `patch` bodies and `search_files`, escape veto via `pre_tool_call`, DB-backed binding recovery after a plugin-host restart, `joust_steer` reaching a live handle, auto-judge on `subagent_stop`); the engine edge cases (merge conflicts, dirty-tree launches, timeouts, telemetry, truncation, concurrency, cleanup); Crossfire, Flake Shield, kept branches and reports; and the real Hermes chain (`apply_tool_request_middleware`, `invoke_hook`, tool dispatch, slash dispatch) loaded through the real plugin manager, in both `plugins.isolation: in_process` and `host` modes.
+- `tests/desktop_smoke/` renders every Desktop contribution with React (server render plus a happy-dom mount that clicks the buttons and fires live events) against a fixture recorded from the real dashboard API: 55 checks pass.
+- Works on Linux and macOS (POSIX shell, `git` ≥ 2.20). `hermes joust …` is wired only when plugins run in-process (the Hermes default); under `plugins.isolation: host` use `/joust …`, the `joust_status` tool or the dashboard.
+
 ## 🔒 Disclosure (Catalog Rule 13)
 
 - **Local Filesystem & Git Operations**: Joust reads the target Git repository specified by `repo_path` (or the current working directory), creates ephemeral Git worktrees under `<HERMES_HOME>/plugin-data/joust/worktrees/`, stores bout metadata in `<HERMES_HOME>/plugin-data/joust/joust.db` (SQLite WAL), and writes reversible backup patches under `<HERMES_HOME>/plugin-data/joust/backups/` before applying a winning contender patch with `git apply`.
