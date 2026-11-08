@@ -22,6 +22,8 @@ provides_hooks:
   - subagent_stop
 provides_middleware:
   - tool_request
+emits:
+  - bout.updated
 config_schema:
   default_timeout_seconds:
     type: int
