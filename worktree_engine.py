@@ -376,9 +376,9 @@ def record_violation(key: str, message: str) -> None:
 
 def pop_violation(*keys: Optional[str]) -> Optional[str]:
     with _LOCK:
-        for key in (session_id, task_id):
-            if key and key in _ACTIVE_SESSION_CONTENDERS:
-                return _ACTIVE_SESSION_CONTENDERS[key]
+        for k in keys:
+            if k and k in _PENDING_VIOLATIONS:
+                return _PENDING_VIOLATIONS.pop(k)
     return None
 
 
