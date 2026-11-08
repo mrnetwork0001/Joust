@@ -35,6 +35,16 @@ config_schema:
     default: true
     label: "Auto-Judge on Subagent Stop"
     description: "Automatically run the bout verification command when a contender subagent finishes."
+  default_runs:
+    type: int
+    default: 1
+    label: "Flake Shield Runs"
+    description: "How many times joust_evaluate runs the verification command per contender (1-7); every run must pass and speed uses the median."
+  keep_loser_branches:
+    type: bool
+    default: true
+    label: "Keep Losers as Branches"
+    description: "Snapshot every contender as a joust/<bout>/<contender> branch before merging or cleaning up, so no attempt is lost."
   keep_backup_patches:
     type: bool
     default: true
