@@ -1750,24 +1750,55 @@ from typing import Deque, Dict, List, Tuple
 
 
 def match_orders(bids: List[Dict], asks: List[Dict]) -> List[Tuple[str, str, int, float]]:
-    """Match buy bids against sell asks in O(N+M) using price-indexed FIFO deques."""
-    ask_buckets: Dict[float, Deque[Dict]] = defaultdict(deque)
+    """Match buy bids against sell asks in O(N+M) using price-indexed FIFO deques.
+
+    A bid keeps consuming asks at its price level until its quantity is filled, so one large
+    bid may produce several fills (the baseline only ever matched the first ask).
+    """
+    ask_buckets: Dict[float, Deque[List]] = defaultdict(deque)
     for ask in asks:
         if ask.get("qty", 0) > 0:
-            ask_buckets[float(ask["price"])].append(ask)
-
+            ask_buckets[float(ask["price"])].append([ask["id"], int(ask["qty"])])
     fills: List[Tuple[str, str, int, float]] = []
     for bid in bids:
-        bid_qty = bid.get("qty", 0)
-        if bid_qty <= 0:
+        remaining = int(bid.get("qty", 0))
+        if remaining <= 0:
             continue
         price = float(bid["price"])
         bucket = ask_buckets.get(price)
-        if bucket:
-            ask = bucket.popleft()
-            fills.append((bid["id"], ask["id"], min(bid_qty, ask["qty"]), price))
+        while remaining > 0 and bucket:
+            ask_id, ask_qty = bucket[0]
+            take = min(remaining, ask_qty)
+            fills.append((bid["id"], ask_id, take, price))
+            remaining -= take
+            if take == ask_qty:
+                bucket.popleft()
+            else:
+                bucket[0][1] = ask_qty - take
     return fills
-'''
+''',
+            "test_crossfire_partial_fills.py": '''"""Crossfire volley from hash-bucket-index: a bid must be able to span several asks."""
+
+import unittest
+
+from order_matcher import match_orders
+
+
+class TestPartialFills(unittest.TestCase):
+    def test_large_bid_consumes_several_asks_at_one_level(self):
+        bids = [{"id": "big", "price": 10.0, "qty": 10}]
+        asks = [{"id": "a1", "price": 10.0, "qty": 4}, {"id": "a2", "price": 10.0, "qty": 6}]
+        self.assertEqual(match_orders(bids, asks), [("big", "a1", 4, 10.0), ("big", "a2", 6, 10.0)])
+
+    def test_leftover_ask_quantity_serves_the_next_bid(self):
+        bids = [{"id": "b1", "price": 7.0, "qty": 3}, {"id": "b2", "price": 7.0, "qty": 3}]
+        asks = [{"id": "a1", "price": 7.0, "qty": 5}]
+        self.assertEqual(match_orders(bids, asks), [("b1", "a1", 3, 7.0), ("b2", "a1", 2, 7.0)])
+
+
+if __name__ == "__main__":
+    unittest.main()
+''',
         },
     )
 
@@ -1809,7 +1840,29 @@ def match_orders(bids: List[Dict], asks: List[Dict]) -> List[Tuple[str, str, int
                 break
             pos += 1
     return fills
-'''
+''',
+            "test_crossfire_zero_qty_levels.py": '''"""Crossfire volley from bisect-sorted-book: zero-quantity asks must never fill, even alone at a level."""
+
+import unittest
+
+from order_matcher import match_orders
+
+
+class TestZeroQtyLevels(unittest.TestCase):
+    def test_lonely_zero_qty_ask_is_skipped(self):
+        bids = [{"id": "b1", "price": 5.0, "qty": 2}]
+        asks = [{"id": "ghost", "price": 5.0, "qty": 0}]
+        self.assertEqual(match_orders(bids, asks), [])
+
+    def test_zero_qty_ask_does_not_shadow_a_real_one(self):
+        bids = [{"id": "b1", "price": 5.0, "qty": 2}]
+        asks = [{"id": "ghost", "price": 5.0, "qty": 0}, {"id": "real", "price": 5.0, "qty": 2}]
+        self.assertEqual(match_orders(bids, asks), [("b1", "real", 2, 5.0)])
+
+
+if __name__ == "__main__":
+    unittest.main()
+''',
         },
     )
 
@@ -1838,4 +1891,6 @@ def match_orders(bids: List[Dict], asks: List[Dict]) -> List[Tuple[str, str, int
         },
     )
 
-    return evaluate_bout(bout_id)
+    # Flake Shield (3 runs each) + Crossfire (every contender's new tests fired at every rival)
+    evaluate_bout(bout_id, runs=3)
+    return run_crossfire(bout_id)
