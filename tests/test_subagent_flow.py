@@ -228,3 +228,10 @@ class TestSubagentFlow(unittest.TestCase):
         self.assertEqual(counts["plus-operator"], 3)
         self.assertEqual(counts["sum-builtin"], 0)
 
+    def test_steer_reaches_live_subagent_via_handle(self) -> None:
+        bout = self._launch()
+        res = json.loads(tools.joust_steer({"bout_id": bout["bout_id"], "contender_id": "sum-builtin", "guidance": "Use sum()"}))
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(res["steered_live_subagent"])
+        self.assertEqual(self.ctx.subagent_lifecycle.steered, [("sub-2", "Use sum()")])
+
