@@ -108,3 +108,9 @@ class TestCrossfire(_Base):
         self.assertEqual(res["crossfire"]["volleys"], 0)
         self.assertTrue(all(c["crossfire_total"] == 0 for c in res["bout"]["contenders"]))
 
+    def test_crossfire_name_keeps_discovery_patterns(self) -> None:
+        self.assertEqual(eng._crossfire_name("test_calc.py", "hash-bucket"), "test_calc__xfire_hash_bucket.py")
+        self.assertEqual(eng._crossfire_name("src/calc.test.js", "Beta"), "src/calc__xfire_beta.test.js")
+        self.assertEqual(eng._crossfire_name("tests/test_x", "a"), "tests/test_x__xfire_a")
+
+
