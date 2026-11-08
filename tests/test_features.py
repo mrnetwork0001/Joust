@@ -134,3 +134,13 @@ class TestFlakeShield(_Base):
         self.assertEqual(res["winner_id"], "alpha")
         self.assertEqual(res["bout"]["contenders"][0]["contender_id"], "alpha")
 
+    def test_median_duration_and_run_cap(self) -> None:
+        bout = self.launch()
+        cmd = "sh -c 'echo JOUST_BENCHMARK_MS=$(cat .n 2>/dev/null || echo 10); echo $(( $(cat .n 2>/dev/null || echo 10) + 100 )) > .n'"
+        res = json.loads(tools.joust_evaluate({"bout_id": bout["bout_id"], "contender_id": "alpha", "runs": 99, "test_command": cmd}))
+        self.assertTrue(res["ok"], res)
+        alpha = {c["contender_id"]: c for c in res["bout"]["contenders"]}["alpha"]
+        self.assertEqual(len(alpha["runs"]), eng.MAX_RUNS)  # 99 is clamped
+        self.assertEqual(alpha["duration_ms"], 310.0)  # median of 10,110,...,610
+
+
