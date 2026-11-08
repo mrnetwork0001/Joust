@@ -120,23 +120,12 @@ function InlineBoutCard({ ctx, boutId, sessionId }) {
 
   useEffect(() => {
     loadBout()
-    const stop = ctx.onEvent('plugin.joust.bout.updated', evt => {
-      if (!evt?.payload?.bout_id || evt.payload.bout_id === boutId) {
-        loadBout()
-      }
-    })
-    return () => {
-      if (typeof stop === 'function') stop()
-    }
+    return subscribeLive(ctx, boutId, loadBout)
   }, [ctx, boutId, loadBout])
 
   const handleEvaluate = () => {
     setBusy(true)
-    ctx.rest('/bouts/' + encodeURIComponent(boutId) + '/evaluate', { method: 'POST', body: {} })
-      .then(res => {
-        if (res && res.bout) setBout(res.bout)
-        notifyUser('info', 'Joust benchmark judge completed!')
-      })
+    requestJudge(ctx, boutId, sessionId)
       .catch(err => notifyUser('error', String(err?.message || err)))
       .finally(() => setBusy(false))
   }
@@ -157,21 +146,21 @@ function InlineBoutCard({ ctx, boutId, sessionId }) {
 
   if (error) {
     return jsx('div', {
-      className: 'my-2 rounded-lg border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) p-3 text-xs text-(--ui-text-secondary)',
+      className: 'my-2 rounded-lg border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) p-3 text-xs text-(--ui-text-secondary)',
       children: 'Joust Bout ' + boutId + ': ' + error
     })
   }
 
   if (!bout) {
     return jsx('div', {
-      className: 'my-2 rounded-lg border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) p-3 text-xs text-(--ui-text-tertiary)',
+      className: 'my-2 rounded-lg border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) p-3 text-xs text-(--ui-text-tertiary)',
       children: 'Loading Joust Arena bout ' + boutId + '...'
     })
   }
 
   const contenders = bout.contenders || []
   return jsxs('div', {
-    className: 'my-2 flex flex-col gap-2.5 rounded-xl border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) p-3.5 text-xs',
+    className: 'my-2 flex flex-col gap-2.5 rounded-xl border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) p-3.5 text-xs',
     children: [
       jsxs('div', {
         className: 'flex items-center justify-between gap-2 border-b border-(--ui-stroke-primary) pb-2',
@@ -184,7 +173,7 @@ function InlineBoutCard({ ctx, boutId, sessionId }) {
                 children: [
                   jsx('span', { children: '⚔️ ' + bout.title }),
                   jsx('span', {
-                    className: 'rounded bg-(--ui-surface-tertiary) px-1.5 py-0.5 font-mono text-[10px] text-(--ui-text-secondary)',
+                    className: 'rounded bg-(--ui-bg-tertiary) px-1.5 py-0.5 font-mono text-[10px] text-(--ui-text-secondary)',
                     children: bout.bout_id
                   })
                 ]
@@ -202,13 +191,13 @@ function InlineBoutCard({ ctx, boutId, sessionId }) {
                 type: 'button',
                 disabled: busy,
                 onClick: handleEvaluate,
-                className: 'rounded border border-(--ui-stroke-primary) bg-(--ui-surface-primary) px-2 py-1 text-[11px] font-medium text-(--ui-text-primary) hover:opacity-90',
+                className: 'rounded border border-(--ui-stroke-primary) bg-(--ui-bg-primary) px-2 py-1 text-[11px] font-medium text-(--ui-text-primary) hover:opacity-90',
                 children: busy ? 'Judging...' : '🏁 Re-Judge'
               }),
               jsx('button', {
                 type: 'button',
                 onClick: () => navigateTo('/joust'),
-                className: 'rounded border border-(--ui-stroke-primary) bg-(--ui-surface-primary) px-2 py-1 text-[11px] font-medium text-(--ui-text-secondary) hover:text-(--ui-text-primary)',
+                className: 'rounded border border-(--ui-stroke-primary) bg-(--ui-bg-primary) px-2 py-1 text-[11px] font-medium text-(--ui-text-secondary) hover:text-(--ui-text-primary)',
                 children: 'Arena Studio →'
               })
             ]
@@ -219,7 +208,7 @@ function InlineBoutCard({ ctx, boutId, sessionId }) {
         className: 'flex flex-col gap-1.5',
         children: contenders.map(c =>
           jsxs('div', {
-            className: 'flex items-center justify-between gap-2 rounded-lg border border-(--ui-stroke-primary) bg-(--ui-surface-primary) px-3 py-2',
+            className: 'flex items-center justify-between gap-2 rounded-lg border border-(--ui-stroke-primary) bg-(--ui-bg-primary) px-3 py-2',
             children: [
               jsxs('div', {
                 className: 'flex flex-col gap-0.5',
@@ -246,10 +235,11 @@ function InlineBoutCard({ ctx, boutId, sessionId }) {
                             ? 'bg-emerald-500/15 text-emerald-400'
                             : c.status === 'failed'
                               ? 'bg-rose-500/15 text-rose-400'
-                              : 'bg-(--ui-surface-tertiary) text-(--ui-text-tertiary)'
+                              : 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)'
                         ),
                         children: c.tests_passed ? 'PASS' : c.status.toUpperCase()
-                      })
+                      }),
+                      ...signalChips(c)
                     ]
                   }),
                   jsx('div', {
