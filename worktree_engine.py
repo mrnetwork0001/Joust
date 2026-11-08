@@ -353,6 +353,12 @@ def get_session_binding(session_id: Optional[str], task_id: Optional[str] = None
     return None
 
 
+def get_session_worktree(session_id: Optional[str], task_id: Optional[str] = None) -> Optional[str]:
+    """Return the bound worktree path for a session_id or task_id, if any."""
+    b = get_session_binding(session_id, task_id)
+    return b["worktree_path"] if b else None
+
+
 def get_session_contender(session_id: Optional[str], task_id: Optional[str] = None) -> Optional[Tuple[str, str]]:
     with _LOCK:
         for key in (session_id, task_id):
