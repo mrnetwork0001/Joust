@@ -170,3 +170,24 @@ class TestSubagentFlow(unittest.TestCase):
         self.assertIsNone(joust_pkg._on_pre_tool_call(tool_name="joust_merge", args={"bout_id": "bout-x", "action": "dry_run"}))
         self.assertIsNone(joust_pkg._on_pre_tool_call(tool_name="joust_evaluate", args={"bout_id": "bout-x"}))
 
+    def test_evaluate_routes_test_command_through_hermes_terminal_tool(self) -> None:
+        calls = []
+
+        def dispatch_tool(name, args, **kw):
+            calls.append((name, dict(args)))
+            return json.dumps({"output": "ok\nJOUST_BENCHMARK_MS=7.5", "exit_code": 0, "error": None, "cwd": args["workdir"]})
+
+        self.ctx.dispatch_tool = dispatch_tool
+        bout = self._launch()
+        res = json.loads(tools.joust_evaluate({"bout_id": bout["bout_id"], "timeout_seconds": 1}))
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(len(calls), 2)
+        for (name, args), c in zip(calls, bout["contenders"]):
+            self.assertEqual(name, "terminal")
+            self.assertEqual(args["workdir"], c["worktree_path"])
+            self.assertEqual(args["timeout"], 5)  # clamped to the 5s floor
+            self.assertIn("unittest", args["command"])
+        judged = {c["contender_id"]: c for c in res["bout"]["contenders"]}
+        self.assertTrue(all(c["tests_passed"] for c in judged.values()))
+        self.assertEqual({c["duration_ms"] for c in judged.values()}, {7.5})
+
