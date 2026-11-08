@@ -243,3 +243,13 @@ class TestSubagentFlow(unittest.TestCase):
             worktree_engine._ACTIVE_SESSION_CONTENDERS.clear()
         self.assertEqual(worktree_engine.get_session_worktree(a["subagent_session_id"]), a["worktree_path"])
 
+    def test_launch_without_parent_session_leaves_worktrees_ready(self) -> None:
+        tools.set_context(None)
+        bout = self._launch()
+        for c in bout["contenders"]:
+            self.assertEqual(c["status"], "ready")
+            self.assertEqual(c["subagent_session_id"], "")
+
+
+if __name__ == "__main__":
+    unittest.main()
