@@ -1610,19 +1610,19 @@ def get_bout_details(bout_id: str, include_diffs: bool = True) -> Dict[str, Any]
     }
 
 
-def list_bouts(limit: int = 20) -> Dict[str, Any]:
-    """Return summary list of bouts and overall arena statistics."""
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM bouts ORDER BY created_at DESC LIMIT ?", (int(limit),)).fetchall()
-    bouts = [get_bout_details(r["bout_id"]) for r in rows]
+def list_bouts(limit: int = 20, diffs_for_latest: int = 3) -> Dict[str, Any]:
+    """Return a summary list of bouts and overall arena statistics.
 
-    total_bouts = len(bouts)
-    total_contenders = sum(len(b["contenders"]) for b in bouts)
-    merged_count = sum(1 for b in bouts if b["status"] == "merged")
+    Live diffs (two git calls per contender) are only recomputed for the most recent ``diffs_for_latest``
+    bouts; older entries use the stats persisted at their last evaluation so listings stay cheap.
+    """
+    conn = get_db()
+    rows = conn.execute("SELECT bout_id FROM bouts ORDER BY created_at DESC LIMIT ?", (int(limit),)).fetchall()
+    bouts = [get_bout_details(r["bout_id"], include_diffs=(i < diffs_for_latest)) for i, r in enumerate(rows)]
     return {
-        "total_bouts": total_bouts,
-        "total_contenders": total_contenders,
-        "merged_bouts": merged_count,
+        "total_bouts": len(bouts),
+        "total_contenders": sum(len(b["contenders"]) for b in bouts),
+        "merged_bouts": sum(1 for b in bouts if b["status"] == "merged"),
         "bouts": bouts,
     }
 
