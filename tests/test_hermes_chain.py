@@ -499,3 +499,22 @@ class TestHermesChain(unittest.TestCase):
 
     # ---- 6. the real ctx.subagent_lifecycle outside an active parent turn ---------------------------------
 
+    def test_13_real_subagent_lifecycle_without_parent_leaves_worktrees_ready(self) -> None:
+        from agent.subagent_lifecycle import SubagentLifecycleError, SubagentLifecycleService
+
+        ctx = self.plugin.tools._CTX_REF
+        service = ctx.subagent_lifecycle
+        self.assertIsInstance(service, SubagentLifecycleService)
+        with self.assertRaises(SubagentLifecycleError):
+            service.launch({"goal": "probe", "role": "leaf", "correlation_id": "chain-probe"})
+
+        repo = _make_repo(Path(self._tmp.name))
+        res = self._launch(repo, spawn_subagents=True)
+        for c in res["bout"]["contenders"]:
+            self.assertEqual(c["status"], "ready", c)
+            self.assertEqual(c["subagent_session_id"], "")
+        self.assertIn("bout.launched", [e["event_type"] for e in res["bout"]["events"]])
+
+
+if __name__ == "__main__":
+    unittest.main()
