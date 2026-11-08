@@ -658,3 +658,48 @@ class TestPathJail(_EngineEdgeCase):
 # ====================================================================================================
 # SQLite / data-dir handling
 # ====================================================================================================
+class TestStorage(_EngineEdgeCase):
+    def test_close_cached_dbs_then_reuse_reopens_same_data(self) -> None:
+        repo = _make_repo(self.tmp)
+        bid = self.launch(repo)["bout_id"]
+        eng.close_cached_dbs()
+        self.assertEqual(eng._DB_CACHE, {})
+        status = json.loads(tools.joust_status({}))
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["total_bouts"], 1)
+        self.assertEqual(status["bouts"][0]["bout_id"], bid)
+        self.assertEqual(eng.get_db().execute("PRAGMA integrity_check").fetchone()[0], "ok")
+
+    def test_full_lifecycle_under_hermes_home_with_spaces_and_unicode(self) -> None:
+        spaced = self.tmp / "home with spaces ünï"
+        os.environ["HERMES_HOME"] = str(spaced)
+        repo = _make_repo(self.tmp)
+        bout = self.launch(repo, names=("s one", "s two"))
+        wt = self.worktrees(bout)
+        self.assertTrue(all(p.resolve().is_relative_to(spaced.resolve()) for p in wt.values()))
+        (wt["s-one"] / "calc.py").write_text(_FIXED_CALC, encoding="utf-8")
+        bid = bout["bout_id"]
+        res = self.evaluate(bid)
+        self.assertEqual(res["winner_id"], "s-one")
+        ap = self.merge(bid, "apply")
+        self.assertTrue(ap["ok"], ap)
+        self.assertTrue(Path(ap["backup_patch_path"]).is_file())
+        self.assertTrue(self.merge(bid, "rollback")["ok"])
+        self.assertTrue(self.merge(bid, "cleanup")["ok"])
+        self.assertTrue((spaced / "plugin-data" / "joust" / "joust.db").is_file())
+
+    def test_db_schema_and_events_survive_across_bouts(self) -> None:
+        repo = _make_repo(self.tmp)
+        first = self.launch(repo)["bout_id"]
+        second = self.launch(repo, names=("x", "y", "z"))["bout_id"]
+        summary = eng.list_bouts(limit=20)
+        self.assertEqual(summary["total_bouts"], 2)
+        self.assertEqual(summary["total_contenders"], 5)
+        self.assertEqual([b["bout_id"] for b in summary["bouts"]][0], second)  # newest first
+        events = eng.get_bout_details(first)["events"]
+        self.assertEqual([e["event_type"] for e in events], ["bout.launched"])
+        self.assertTrue(eng.get_bout_details(second)["directive"].startswith("::joust-bout{id="))
+
+
+if __name__ == "__main__":
+    unittest.main()
