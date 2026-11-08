@@ -331,3 +331,33 @@ class TestHermesChain(unittest.TestCase):
 
     # ---- 4. lifecycle hooks through Hermes invoke_hook -------------------------------------------------
 
+    def test_07_subagent_start_via_lifecycle_invoke_hook_binds_child_session(self) -> None:
+        repo = _make_repo(Path(self._tmp.name))
+        bout = self._launch(repo)["bout"]
+        b = self._contenders(bout)["sum-builtin"]
+
+        results = self._start_hook(bout["bout_id"], "sum-builtin", "chain-sess-B", "sa-B")
+        self.assertEqual(results, [], "subagent_start is an observer; the plugin must return None")
+        self.assertEqual(self.engine.get_session_worktree("chain-sess-B"), b["worktree_path"])
+        self.assertEqual(self.engine.get_session_contender("chain-sess-B"), (bout["bout_id"], "sum-builtin"))
+        details = self.engine.get_bout_details(bout["bout_id"])
+        judged = self._contenders(details)["sum-builtin"]
+        self.assertEqual(judged["subagent_session_id"], "chain-sess-B")
+        self.assertEqual(judged["status"], "running")
+        self.assertIn("contender.subagent_started", [e["event_type"] for e in details["events"]])
+
+        # A child whose goal carries no Joust marker is ignored without error.
+        from hermes_cli.lifecycle import invoke_hook
+
+        out = invoke_hook(
+            "subagent_start", parent_session_id="parent-sess", parent_turn_id="", parent_subagent_id=None,
+            child_session_id="unrelated-sess", child_subagent_id="sa-X", child_role="leaf", child_goal="Summarize the README.",
+        )
+        self.assertEqual(out, [])
+        self.assertIsNone(self.engine.get_session_worktree("unrelated-sess"))
+
+    def _wait_judges(self) -> None:
+        import importlib
+        pkg = importlib.import_module(self.engine.__name__.rsplit(".", 1)[0])
+        pkg.wait_for_auto_judges()
+
