@@ -9,6 +9,7 @@
 1. **True Parallel Subagent Filesystem Isolation (`tool_request` Middleware + Git Worktrees)**
    - In core Hermes, `SubagentLaunchRequest` rejects `working_directory` overrides, so parallel coding subagents share the same working directory and collide when editing files.
    - Joust creates detached Git worktrees under `<HERMES_HOME>/plugin-data/joust/worktrees/<bout_id>/<contender_id>` (carrying over any uncommitted local edits) and registers a `tool_request` middleware that transparently rewrites relative file paths and terminal working directories per child `session_id` / `task_id` into that contender's worktree.
+   - The child session is bound through the `subagent_start` hook: `joust_launch` embeds a `joust:bout=…;contender=…` marker in each child's goal, the hook (which Hermes fires inside `launch()`) pairs `child_session_id` with that marker, and the binding is also persisted in SQLite so it survives a plugin-host restart.
 2. **Deterministic Verification & Benchmark Judge (`joust_evaluate`)**
    - Runs your test or benchmark command inside each isolated worktree with bounded timeouts, captures exit codes, wall-clock execution time (`ms`), and custom `JOUST_BENCHMARK_MS=<float>` telemetry, and computes a composite **Joust Score (0–100)**.
 3. **Reversible 1-Click Winner Merge (`joust_merge`)**
