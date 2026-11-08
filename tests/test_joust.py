@@ -10,11 +10,9 @@ import unittest
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT.parent) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT.parent))
-
-import Joust as joust_pkg  # noqa: E402
-from Joust import tools, worktree_engine  # noqa: E402
+if str(_REPO_ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "tests"))
+from _plugin_loader import joust_pkg, tools, worktree_engine  # noqa: E402
 
 
 class TestJoustPlugin(unittest.TestCase):
