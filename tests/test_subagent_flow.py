@@ -191,3 +191,12 @@ class TestSubagentFlow(unittest.TestCase):
         self.assertTrue(all(c["tests_passed"] for c in judged.values()))
         self.assertEqual({c["duration_ms"] for c in judged.values()}, {7.5})
 
+    def test_terminal_tool_errors_count_as_failures_without_fallback(self) -> None:
+        self.ctx.dispatch_tool = lambda name, args, **kw: json.dumps({"output": "", "exit_code": None, "error": "blocked by policy", "status": "blocked"})
+        bout = self._launch()
+        res = json.loads(tools.joust_evaluate({"bout_id": bout["bout_id"]}))
+        self.assertTrue(res["ok"], res)
+        for c in res["bout"]["contenders"]:
+            self.assertFalse(c["tests_passed"])
+            self.assertIn("blocked", c["test_output"])
+
