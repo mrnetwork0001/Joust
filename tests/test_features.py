@@ -172,3 +172,17 @@ class TestBranchesAndReport(_Base):
         by = {c["contender_id"]: c for c in eng.get_bout_details(bid)["contenders"]}
         self.assertEqual(by["beta"]["branch_ref"], f"joust/{bid}/beta")
 
+    def test_report_refuses_paths_outside_the_repo_and_cleanup_keeps_branches(self) -> None:
+        bout = self.launch()
+        bid = bout["bout_id"]
+        (self.wt(bout, "alpha") / "x.txt").write_text("x\n", encoding="utf-8")
+        bad = json.loads(tools.joust_report({"bout_id": bid, "write_path": "../outside.md"}))
+        self.assertFalse(bad["ok"])
+        self.assertIn("inside the bout repository", bad["error"])
+        cleaned = json.loads(tools.joust_merge({"bout_id": bid, "action": "cleanup"}))
+        self.assertTrue(cleaned["ok"], cleaned)
+        self.assertEqual(set(cleaned["kept_branches"]), {"alpha", "beta"})
+        self.assertIn("x.txt", _git(self.repo, "ls-tree", "--name-only", f"joust/{bid}/alpha").stdout)
+        self.assertFalse(self.wt(bout, "alpha").exists())
+
+
