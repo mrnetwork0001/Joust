@@ -361,3 +361,44 @@ class TestHermesChain(unittest.TestCase):
         pkg = importlib.import_module(self.engine.__name__.rsplit(".", 1)[0])
         pkg.wait_for_auto_judges()
 
+    def test_08_subagent_stop_via_plugins_invoke_hook_auto_evaluates_on_caller_thread(self) -> None:
+        from hermes_cli import plugins_dispatch
+
+        # Contract pinned by Hermes: subagent_stop never moves to a timeout worker (hooks.md).
+        self.assertIn("subagent_stop", plugins_dispatch._HOOK_CALLER_THREAD_HOOKS)
+        self.assertNotIn("subagent_stop", plugins_dispatch._HOOK_TIMEOUT_BOUNDED_HOOKS)
+
+        repo = _make_repo(Path(self._tmp.name))
+        bout = self._launch(repo)["bout"]
+        a = self._contenders(bout)["plus-operator"]
+        self._start_hook(bout["bout_id"], "plus-operator", "chain-sess-C", "sa-C")
+        (Path(a["worktree_path"]) / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+        seen: Dict[str, Any] = {}
+
+        def spy(**kwargs: Any) -> None:
+            seen["thread"] = threading.current_thread()
+            seen["kwargs"] = sorted(kwargs)
+
+        self.manager._hooks["subagent_stop"].append(spy)
+        try:
+            results = self._stop_hook("chain-sess-C")
+        finally:
+            self.manager._hooks["subagent_stop"].remove(spy)
+        self.assertEqual(results, [])
+        self.assertIs(seen["thread"], threading.current_thread(), "subagent_stop callbacks run on the firing thread")
+        self.assertIn("telemetry_schema_version", seen["kwargs"])
+
+        self._wait_judges()  # bookkeeping is synchronous; the benchmark runs on a daemon thread
+        details = self.engine.get_bout_details(bout["bout_id"])
+        judged = self._contenders(details)
+        self.assertTrue(judged["plus-operator"]["tests_passed"], judged["plus-operator"]["test_output"])
+        self.assertGreaterEqual(judged["plus-operator"]["score"], 60.0)
+        self.assertEqual(judged["plus-operator"]["status"], "passed")
+        self.assertFalse(judged["sum-builtin"]["tests_passed"])
+        self.assertIn(judged["sum-builtin"]["status"], ("ready", "running"))  # rival not judged yet: never marked failed
+        self.assertEqual(details["winner_id"], "plus-operator")
+        events = [e["event_type"] for e in details["events"]]
+        self.assertIn("contender.subagent_stopped", events)
+        self.assertIn("bout.evaluated", events)
+
