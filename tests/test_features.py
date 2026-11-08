@@ -144,3 +144,4 @@ class TestFlakeShield(_Base):
         self.assertEqual(alpha["duration_ms"], 310.0)  # median of 10,110,...,610
 
 
+class TestBranchesAndReport(_Base):
