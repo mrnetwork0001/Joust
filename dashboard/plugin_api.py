@@ -69,17 +69,22 @@ async def api_run_demo() -> Dict[str, Any]:
 
 @router.post("/bouts/{bout_id}/evaluate")
 async def api_evaluate_bout(bout_id: str, body: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Judging runs test commands, so it is agent-mediated: the UI hands this prompt to the chat composer and
+    the agent calls joust_evaluate, which executes through the Hermes terminal tool (approval gates apply)."""
     payload = body or {}
     try:
-        bout = worktree_engine.evaluate_bout(
-            bout_id=bout_id,
-            contender_id=payload.get("contender_id"),
-            test_command_override=payload.get("test_command"),
-            timeout_seconds=int(payload.get("timeout_seconds") or 60),
-        )
-        return {"ok": True, "bout": bout}
+        bout = worktree_engine.get_bout_details(bout_id, include_diffs=False)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    contender = str(payload.get("contender_id") or "").strip()
+    target = f' contender_id="{contender}"' if contender else ""
+    return {
+        "ok": False,
+        "needs_agent": True,
+        "bout_id": bout_id,
+        "prompt": f'Re-judge Joust bout {bout_id}: call joust_evaluate with bout_id="{bout_id}"{target} and show the ::joust-bout card.',
+        "test_command": bout["test_command"],
+    }
 
 
 @router.post("/bouts/{bout_id}/steer")
