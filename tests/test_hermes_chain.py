@@ -173,3 +173,49 @@ class TestHermesChain(unittest.TestCase):
 
     # ---- 1. registration through the real PluginManager ------------------------------------------------
 
+    def test_01_register_ctx_populates_every_hermes_registry(self) -> None:
+        from tools.registry import registry
+
+        self.assertIn("enabled", self.enable_output.lower(), self.enable_output)
+        self.assertIsNone(self.loaded.error)
+        self.assertTrue(self.plugin.__name__.startswith("hermes_plugins."), self.plugin.__name__)
+
+        # Tools: ledger attribution and the global tool registry (profile scope) agree.
+        self.assertEqual(self.loaded.tools_registered, _EXPECTED_TOOLS)
+        for name in _EXPECTED_TOOLS:
+            entry = registry.get_entry(name, scope=self.manager.scope_key)
+            self.assertIsNotNone(entry, name)
+            self.assertEqual(entry.toolset, "joust")
+            self.assertTrue(entry.handler.__module__.startswith(self.plugin.__name__), entry.handler.__module__)
+            self.assertIn(name, self.manager._plugin_tool_names)
+        self.assertEqual(sorted(self.loaded.manifest.provides_tools), sorted(_EXPECTED_TOOLS))
+
+        # Hooks + middleware.
+        self.assertEqual(self.loaded.hooks_registered, _EXPECTED_HOOKS)
+        for hook in _EXPECTED_HOOKS:
+            self.assertTrue(any(cb.__module__ == self.plugin.__name__ for cb in self.manager._hooks.get(hook, [])), hook)
+            self.assertTrue(self.hp.has_hook(hook), hook)
+        self.assertEqual(self.loaded.middleware_registered, ["tool_request"])
+        self.assertTrue(any(cb.__module__ == self.plugin.__name__ for cb in self.manager._middleware.get("tool_request", [])))
+        self.assertTrue(self.hp.has_middleware("tool_request"))
+
+        # Slash command, CLI subcommand, skill.
+        self.assertEqual(self.loaded.commands_registered, ["joust"])
+        cmd = self.manager._plugin_commands["joust"]
+        self.assertEqual(cmd["plugin_key"], "joust")
+        self.assertTrue(callable(cmd["handler"]))
+        self.assertTrue(cmd["args_hint"])
+        self.assertIs(self.hp.get_plugin_command_handler("joust"), cmd["handler"])
+        self.assertIn("joust", self.manager._cli_commands)
+        skill_path = self.manager.find_plugin_skill("joust:joust-arena")
+        self.assertIsNotNone(skill_path)
+        self.assertTrue(Path(skill_path).is_file())
+        self.assertEqual(self.manager.list_plugin_skills("joust"), ["joust-arena"])
+        self.assertIn("joust:joust-arena", [m["name"] for m in self.manager.list_plugin_skill_metadata()])
+
+        # The ctx the plugin kept is the real PluginContext, and its config path resolves to manifest defaults.
+        ctx = self.plugin.tools._CTX_REF
+        self.assertIsInstance(ctx, self.hp.PluginContext)
+        self.assertEqual(ctx.plugin_id, "joust")
+        self.assertEqual(ctx.get_config("default_timeout_seconds", 60), 60)
+
