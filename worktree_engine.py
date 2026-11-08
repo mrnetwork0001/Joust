@@ -364,6 +364,20 @@ def get_session_contender(session_id: Optional[str], task_id: Optional[str] = No
     return (b["bout_id"], b["contender_id"]) if b else None
 
 
+def count_tool_call(bout_id: str, contender_id: str) -> None:
+    """Increment a contender's tool-call counter (best effort, serialized)."""
+    try:
+        conn = get_db()
+        with _LOCK:
+            conn.execute(
+                "UPDATE contenders SET tool_calls_count = tool_calls_count + 1 WHERE bout_id = ? AND contender_id = ?",
+                (bout_id, contender_id),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
 def record_violation(key: str, message: str) -> None:
     """Remember an escape attempt so the pre_tool_call hook can veto the call (middleware already clamped it)."""
     if not key:
