@@ -60,3 +60,44 @@ class _Base(unittest.TestCase):
 
 
 class TestCrossfire(_Base):
+    def test_rivals_must_survive_each_others_tests(self) -> None:
+        bout = self.launch()
+        bid = bout["bout_id"]
+        # alpha guards division by zero and ships a test for it; beta only passes the baseline suite
+        (self.wt(bout, "alpha") / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\n\ndef div(a, b):\n    return 0 if b == 0 else a / b\n", encoding="utf-8")
+        (self.wt(bout, "alpha") / "test_div_guard.py").write_text(
+            "import unittest\nfrom calc import div\n\nclass T(unittest.TestCase):\n    def test_div_zero(self):\n        self.assertEqual(div(1, 0), 0)\n",
+            encoding="utf-8")
+        (self.wt(bout, "beta") / "calc.py").write_text(
+            "def add(a, b):\n    return b + a\n\n\ndef div(a, b):\n    return a / b\n", encoding="utf-8")
+        (self.wt(bout, "beta") / "tests").mkdir()
+        (self.wt(bout, "beta") / "tests" / "test_commutative.py").write_text(
+            "import unittest\nfrom calc import add\n\nclass T(unittest.TestCase):\n    def test_comm(self):\n        self.assertEqual(add(1, 2), add(2, 1))\n",
+            encoding="utf-8")
+
+        judged = json.loads(tools.joust_evaluate({"bout_id": bid}))
+        self.assertTrue(judged["ok"], judged)
+        self.assertTrue(all(c["tests_passed"] for c in judged["bout"]["contenders"]))  # both pass their own suites
+
+        res = json.loads(tools.joust_crossfire({"bout_id": bid}))
+        self.assertTrue(res["ok"], res)
+        by = {c["contender_id"]: c for c in res["bout"]["contenders"]}
+        self.assertEqual((by["alpha"]["crossfire_survived"], by["alpha"]["crossfire_total"]), (1, 1))  # survives beta's volley
+        self.assertEqual((by["beta"]["crossfire_survived"], by["beta"]["crossfire_total"]), (0, 1))  # dies to alpha's div guard test
+        self.assertEqual(by["alpha"]["crossfire"]["test_files"], ["test_div_guard.py"])
+        self.assertEqual(by["beta"]["crossfire"]["test_files"], ["tests/test_commutative.py"])
+        self.assertFalse(by["beta"]["crossfire"]["defenses"]["alpha"]["passed"])
+        self.assertEqual(res["winner_id"], "alpha")
+        self.assertEqual(res["bout"]["contenders"][0]["contender_id"], "alpha")  # survival is the first tiebreak
+        self.assertEqual(res["crossfire"]["volleys"], 2)
+        # volleys leave no trace in the rival worktrees
+        self.assertEqual([p.name for p in self.wt(bout, "beta").glob("*xfire*")], [])
+        self.assertEqual([p.name for p in self.wt(bout, "alpha").rglob("*xfire*")], [])
+        status = _git(self.wt(bout, "beta"), "status", "--porcelain").stdout
+        self.assertNotIn("xfire", status)
+        self.assertIn("calc.py", status)
+        # and the merge still applies only the contender's own edits
+        merged = json.loads(tools.joust_merge({"bout_id": bid, "action": "dry_run"}))
+        self.assertTrue(merged["clean_apply"], merged)
+
