@@ -85,14 +85,13 @@ _SECRET_PATTERNS = (
 
 
 def _redact(text: str) -> str:
+    """Best-effort secret scrubbing for captured benchmark output (stdlib only; catalog rule 9)."""
     if not text:
-        return ""
-    try:
-        from agent.redact import redact_sensitive_text
-
-        return redact_sensitive_text(text)
-    except Exception:
         return text
+    out = text
+    for pattern in _SECRET_PATTERNS:
+        out = pattern.sub("[REDACTED]", out)
+    return out
 
 
 def notify_desktop(event: str, payload: Optional[Dict[str, Any]] = None) -> None:
