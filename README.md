@@ -1,6 +1,6 @@
 # ⚔️ Joust — Parallel Git-Worktree Subagent Arena & Benchmark Judge for Hermes Agent
 
-**Joust** turns Hermes into a **Speculative Parallel Coding Arena**. Instead of letting a single agent mutate your working tree directly—or having parallel subagents overwrite each other's files—Joust provisions **isolated ephemeral Git worktrees** for 2 to 4 competing strategies, jails each contender's file and terminal tool calls inside its own worktree via `tool_request` middleware, runs your verification and benchmark suite across every contender, ranks them by **Correctness (60 pts)**, **Execution Speed (25 pts)**, and **Diff Minimalism (15 pts)**, and merges the winning patch into your main repository with **1-click rollback safety**.
+**Joust** turns Hermes into a **Speculative Parallel Coding Arena**. Instead of letting a single agent mutate your working tree directly—or having parallel subagents overwrite each other's files—Joust provisions **isolated ephemeral Git worktrees** for 2 to 4 competing strategies, jails each contender's file and terminal tool calls inside its own worktree via `tool_request` middleware, runs your verification and benchmark suite across every contender, ranks them by **Correctness (60 pts)**, **Execution Speed (25 pts)**, and **Diff Minimalism (15 pts)** with Crossfire survival as the tiebreak, and merges the winning patch into your main repository with **1-click rollback safety**.
 
 ---
 
