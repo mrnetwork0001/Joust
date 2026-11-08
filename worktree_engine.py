@@ -736,10 +736,81 @@ def _compute_worktree_diff_stats(wt_path: Path) -> Tuple[int, int, int, str]:
     return files_changed, insertions, deletions, diff_text
 
 
-def _run_verification_command(command: str, wt_path: Path, timeout_seconds: int = 60) -> Tuple[int, float, str]:
-    """Run the verification/benchmark command inside wt_path and return (exit_code, duration_ms, output)."""
-    if not wt_path.exists():
-        return 1, 0.0, f"Worktree directory missing: {wt_path}"
+_BENCH_RE = re.compile(r"JOUST_BENCHMARK_MS=([0-9]+(?:\.[0-9]+)?)(?![0-9.])")
+OUTPUT_HEAD_CHARS = 3000
+OUTPUT_TAIL_CHARS = 5000
+
+
+def make_terminal_runner(ctx: Any) -> Optional[Any]:
+    """Build a runner that executes commands through the Hermes ``terminal`` tool via ``ctx.dispatch_tool``.
+
+    Routing through the terminal tool keeps Hermes's dangerous-command guards, approval prompts and the
+    configured terminal backend in the loop for model- or user-supplied test commands (catalog rule 12).
+    Returns None when no plugin context is available (CLI demo, dashboard) so callers fall back to a
+    bounded subprocess for plugin-authored commands.
+    """
+    if ctx is None or not callable(getattr(ctx, "dispatch_tool", None)):
+        return None
+
+    def runner(command: str, workdir: str, timeout: int) -> str:
+        return ctx.dispatch_tool("terminal", {"command": command, "workdir": workdir, "timeout": int(timeout)})
+
+    return runner
+
+
+def _squash_output(combined: str) -> Tuple[str, Optional[float]]:
+    """Extract the LAST JOUST_BENCHMARK_MS marker from the full output, then truncate head+tail and redact."""
+    bench_ms: Optional[float] = None
+    marks = _BENCH_RE.findall(combined)
+    if marks:
+        try:
+            bench_ms = round(float(marks[-1]), 2)
+        except ValueError:
+            bench_ms = None
+    if len(combined) > OUTPUT_HEAD_CHARS + OUTPUT_TAIL_CHARS + 40:
+        combined = (
+            combined[:OUTPUT_HEAD_CHARS]
+            + f"\n... [Joust truncated {len(combined) - OUTPUT_HEAD_CHARS - OUTPUT_TAIL_CHARS} chars] ...\n"
+            + combined[-OUTPUT_TAIL_CHARS:]
+        )
+    return _redact(combined), bench_ms
+
+
+def _run_verification_command(
+    command: str, wt_path: Path, timeout_seconds: int = 60, runner: Any = None
+) -> Tuple[int, float, str, Optional[float]]:
+    """Run the verification/benchmark command inside wt_path.
+
+    Returns (exit_code, wall_ms, output, benchmark_ms). With ``runner`` (see make_terminal_runner) the
+    command goes through the Hermes terminal tool; without it, a bounded ``/bin/sh -c`` subprocess runs
+    (only used for plugin-authored commands such as the built-in demo, or explicit CLI/dashboard calls).
+    """
+    if not wt_path.is_dir():
+        return 1, 0.0, f"Worktree directory missing: {wt_path}", None
+    effective = clamp_timeout(timeout_seconds)
+    t0 = time.perf_counter()
+
+    if runner is not None:
+        try:
+            raw = runner(command, str(wt_path), effective)
+            wall_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            data = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, dict) else {})
+            output = str(data.get("output") or "")
+            err = data.get("error")
+            status = str(data.get("status") or "")
+            exit_code = data.get("exit_code")
+            if exit_code is None or err or status in ("blocked", "pending_approval", "error", "degraded"):
+                # 125 = "the terminal tool refused or failed to run the command" (never -1: that marks never-run rows)
+                exit_code = 125 if exit_code is None else int(exit_code)
+                note = f"[terminal tool: status={status or 'n/a'} error={err or 'n/a'}]"
+                output = (output + "\n" + note).strip()
+                if exit_code == 0 and (err or status in ("blocked", "pending_approval", "error")):
+                    exit_code = 1
+            squashed, bench = _squash_output(output)
+            return int(exit_code), wall_ms, squashed, bench
+        except Exception as exc:
+            wall_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            return 1, wall_ms, f"Terminal tool dispatch failed: {exc}", None
 
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
