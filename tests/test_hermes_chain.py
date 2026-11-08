@@ -313,3 +313,21 @@ class TestHermesChain(unittest.TestCase):
         self.assertEqual(res_other.payload, {"path": "calc.py", "content": "x"})
         self.assertNotIn("joust", [t.get("source") for t in res_other.trace])
 
+    def test_06_unbound_session_is_a_no_op_for_hermes(self) -> None:
+        """KNOWN DEFECT (documented, see the hermes-chain report): for a session Joust is not tracking the
+        middleware returns ``{"args": args}`` instead of ``None``. Hermes' ``_apply_request_chain`` treats
+        ANY dict carrying an ``args`` dict as a rewrite, so every tool call of every non-Joust session is
+        reported as ``changed=True`` with a ``{"source": "plugin"}`` trace entry. The fix is to return
+        ``None`` on the no-op path; flip this decorator off once it lands."""
+        from hermes_cli.middleware import apply_tool_request_middleware
+
+        for sid in ("someone-else", ""):
+            res = apply_tool_request_middleware(
+                "write_file", {"path": "calc.py", "content": "x"}, session_id=sid, task_id="", tool_call_id="t5",
+                turn_id="", api_request_id="",
+            )
+            self.assertFalse(res.changed, (sid, res.trace))
+            self.assertEqual(res.trace, [], (sid, res.trace))
+
+    # ---- 4. lifecycle hooks through Hermes invoke_hook -------------------------------------------------
+
