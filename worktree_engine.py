@@ -219,7 +219,27 @@ def resolve_git_repo(repo_path: Optional[str] = None) -> Tuple[Path, str]:
     return root, head.stdout.strip()
 
 
-def bind_session_worktree(session_id: str, bout_id: str, contender_id: str, worktree_path: str) -> None:
+_PENDING_SUBAGENT_SESSIONS: Dict[str, str] = {}  # child_subagent_id / marker -> child_session_id
+_ACTIVE_SESSION_REPOS: Dict[str, str] = {}  # session_id -> main repo root (for path redirection)
+_UNBOUND_SESSIONS: set = set()  # negative cache: sessions known not to be Joust contenders
+_PENDING_VIOLATIONS: Dict[str, str] = {}  # tool_call_id (or session_id) -> escape message for pre_tool_call
+_MARKER_RE = re.compile(r"joust:bout=(bout-[0-9a-f]{8});contender=([a-z0-9][a-z0-9_\-]*)")
+_UNBOUND_CACHE_MAX = 4096
+
+
+def contender_marker(bout_id: str, contender_id: str) -> str:
+    """Stable marker embedded in a contender's goal so the subagent_start hook can bind its session."""
+    return f"joust:bout={bout_id};contender={contender_id}"
+
+
+def parse_contender_marker(text: Optional[str]) -> Optional[Tuple[str, str]]:
+    m = _MARKER_RE.search(text or "")
+    return (m.group(1), m.group(2)) if m else None
+
+
+def bind_session_worktree(
+    session_id: str, bout_id: str, contender_id: str, worktree_path: str, repo_path: str = ""
+) -> None:
     """Register a child subagent session/task ID so middleware scopes its tools to its worktree."""
     if not session_id:
         return
