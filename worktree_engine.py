@@ -168,6 +168,17 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             );
             """
         )
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(contenders)").fetchall()}
+        for col, decl in (
+            ("crossfire_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("crossfire_survived", "INTEGER NOT NULL DEFAULT 0"),
+            ("crossfire_total", "INTEGER NOT NULL DEFAULT 0"),
+            ("runs_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("flaky", "INTEGER NOT NULL DEFAULT 0"),
+            ("branch_ref", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col not in existing:
+                conn.execute(f"ALTER TABLE contenders ADD COLUMN {col} {decl}")
         conn.commit()
 
 
