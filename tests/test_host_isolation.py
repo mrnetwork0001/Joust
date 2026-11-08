@@ -288,3 +288,39 @@ class TestWireSafety(_JoustCase):
         self.assertIsNone(joust_pkg._on_tool_request(tool_name="terminal", args="ls", session_id="x"))
 
 
+class TestHostRestartRecovery(_JoustCase):
+    """A plugin-host restart (or a reload) wipes every module-level map; SQLite must carry the binding."""
+
+    def test_bindings_recover_from_db_after_simulated_host_restart(self) -> None:
+        bout = self._launch(_FakeCtx(_FakeLifecycle()))
+        a, b = bout["contenders"]
+        _reset_memory_maps()
+        worktree_engine.close_cached_dbs()  # a new host process opens a new connection
+        self.assertEqual(worktree_engine.get_session_worktree(a["subagent_session_id"]), a["worktree_path"])
+        self.assertEqual(worktree_engine.get_session_contender(b["subagent_session_id"]),
+                         (bout["bout_id"], b["contender_id"]))
+        out = joust_pkg._on_tool_request(tool_name="write_file", args={"path": "calc.py", "content": "x"},
+                                         session_id=a["subagent_session_id"], task_id="")
+        self.assertEqual(out["args"]["path"], str(Path(a["worktree_path"]) / "calc.py"))
+        joust_pkg._on_post_tool_call(tool_name="write_file", args={}, result="", session_id=b["subagent_session_id"])
+        details = worktree_engine.get_bout_details(bout["bout_id"])
+        counts = {c["contender_id"]: c["tool_calls_count"] for c in details["contenders"]}
+        self.assertEqual(counts, {"plus-operator": 0, "sum-builtin": 1})
+
+    def test_unknown_session_after_restart_stays_unbound(self) -> None:
+        self._launch(_FakeCtx(_FakeLifecycle()))
+        _reset_memory_maps()
+        worktree_engine.close_cached_dbs()
+        self.assertIsNone(worktree_engine.get_session_worktree("stranger", "task-stranger"))
+        out = joust_pkg._on_tool_request(tool_name="write_file", args={"path": "calc.py"}, session_id="stranger")
+        self.assertIsNone(out)
+
+    def test_stale_binding_to_removed_worktree_is_ignored(self) -> None:
+        bout = self._launch(_FakeCtx(_FakeLifecycle()))
+        a = bout["contenders"][0]
+        json.loads(tools.joust_merge({"bout_id": bout["bout_id"], "action": "cleanup"}))
+        _reset_memory_maps()
+        self.assertFalse(Path(a["worktree_path"]).exists())
+        self.assertIsNone(worktree_engine.get_session_worktree(a["subagent_session_id"]))
+
+
