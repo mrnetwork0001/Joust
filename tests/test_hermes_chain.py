@@ -251,3 +251,21 @@ class TestHermesChain(unittest.TestCase):
         self.assertTrue(status["ok"], status)
         self.assertEqual(status["bout"]["bout_id"], res["bout_id"])
 
+    def test_04_ctx_dispatch_tool_joust_status_run_demo(self) -> None:
+        ctx = self.plugin.tools._CTX_REF
+        demo = json.loads(ctx.dispatch_tool("joust_status", {"run_demo": True}))
+        self.assertTrue(demo["ok"], demo)
+        self.assertTrue(demo["demo"])
+        self.assertEqual(demo["winner_id"], "hash-bucket-index")
+        self.assertEqual(demo["directive"], f'::joust-bout{{id="{demo["bout_id"]}"}}')
+        ranked = demo["bout"]["contenders"]
+        self.assertEqual([c["contender_id"] for c in ranked], ["hash-bucket-index", "bisect-sorted-book", "naive-filter-scan"])
+        self.assertEqual([c["tests_passed"] for c in ranked], [True, True, False])
+        self.assertTrue(ranked[0]["is_winner"])
+        # Unknown-tool and invalid-arg paths stay JSON, never exceptions.
+        bad = self._dispatch("joust_evaluate", {})
+        self.assertFalse(bad["ok"])
+        self.assertIn("bout_id", bad["error"])
+
+    # ---- 3. tool_request middleware through hermes_cli.middleware ---------------------------------------
+
