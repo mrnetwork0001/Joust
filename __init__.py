@@ -297,15 +297,34 @@ def register(ctx: Any) -> None:
         emoji="📊",
     )
 
+    ctx.register_tool(
+        name="joust_crossfire",
+        toolset="joust",
+        schema=schemas.JOUST_CROSSFIRE,
+        handler=tools.joust_crossfire,
+        description="Fire each contender's tests at every rival worktree (survival is the first tiebreak)",
+        emoji="🎯",
+    )
+    ctx.register_tool(
+        name="joust_report",
+        toolset="joust",
+        schema=schemas.JOUST_REPORT,
+        handler=tools.joust_report,
+        description="Write a markdown bout report and keep every contender as a git branch",
+        emoji="📜",
+    )
+
     ctx.register_middleware("tool_request", _on_tool_request)
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("subagent_start", _on_subagent_start)
     ctx.register_hook("subagent_stop", _on_subagent_stop)
 
     ctx.register_command(
         "joust",
         _handle_slash_joust,
-        description="Manage Joust parallel Git-worktree tournaments (/joust status|demo|judge|merge|rollback)",
-        args_hint="[status|demo|judge|merge|rollback]",
+        description="Manage Joust parallel Git-worktree tournaments (/joust status|demo|judge|crossfire|report|merge|rollback)",
+        args_hint="[status|demo|judge|crossfire|report|merge|rollback]",
     )
     ctx.register_cli_command(
         "joust",
