@@ -137,3 +137,41 @@ def _reset_memory_maps() -> None:
         worktree_engine._PENDING_SUBAGENT_SESSIONS.clear()
 
 
+class _JoustCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="joust-host-iso-")
+        os.environ["HERMES_HOME"] = self._tmp.name
+        self.repo = _make_repo(Path(self._tmp.name))
+        _reset_memory_maps()
+
+    def tearDown(self) -> None:
+        tools.set_context(None)
+        _reset_memory_maps()
+        worktree_engine.close_cached_dbs()
+        self._tmp.cleanup()
+
+    def _launch(self, ctx: Any, spawn: bool = True) -> Dict[str, Any]:
+        tools.set_context(ctx)
+        raw = tools.joust_launch({
+            "title": "Fix add",
+            "goal": "Make add() return the sum.",
+            "repo_path": str(self.repo),
+            "test_command": f"{sys.executable} -m unittest -q",
+            "spawn_subagents": spawn,
+            "contenders": [
+                {"name": "plus-operator", "strategy": "use a + b"},
+                {"name": "sum-builtin", "strategy": "use sum((a, b))"},
+            ],
+        })
+        res = json.loads(raw)
+        self.assertTrue(res["ok"], msg=raw)
+        return res["bout"]
+
+    def _handle_rows(self, bout_id: str) -> Dict[str, Dict[str, Any]]:
+        rows = worktree_engine.get_db().execute(
+            "SELECT contender_id, status, subagent_session_id, subagent_handle_json FROM contenders WHERE bout_id = ?",
+            (bout_id,),
+        ).fetchall()
+        return {r["contender_id"]: dict(r) for r in rows}
+
+
