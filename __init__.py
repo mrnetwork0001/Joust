@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from . import schemas, tools, worktree_engine
+from . import arena_tools as tools, schemas, worktree_engine
 
 logger = logging.getLogger(__name__)
 _PLUGIN_DIR = Path(__file__).resolve().parent
