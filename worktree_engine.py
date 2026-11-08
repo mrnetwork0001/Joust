@@ -246,6 +246,9 @@ def bind_session_worktree(
     with _LOCK:
         _ACTIVE_SESSION_WORKTREES[session_id] = str(Path(worktree_path).resolve())
         _ACTIVE_SESSION_CONTENDERS[session_id] = (bout_id, contender_id)
+        if repo_path:
+            _ACTIVE_SESSION_REPOS[session_id] = str(Path(repo_path).resolve())
+        _UNBOUND_SESSIONS.discard(session_id)
 
 
 def get_session_worktree(session_id: Optional[str], task_id: Optional[str] = None) -> Optional[str]:
