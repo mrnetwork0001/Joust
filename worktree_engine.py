@@ -714,18 +714,18 @@ def create_bout(
 
 
 def _compute_worktree_diff_stats(wt_path: Path) -> Tuple[int, int, int, str]:
-    """Return (files_changed, insertions, deletions, unified_diff) for a contender worktree."""
-    if not wt_path.exists():
-        return 0, 0, 0, ""
+    """Return (files_changed, insertions, deletions, unified_diff) for a contender worktree.
 
-    # Stage untracked files with intent-to-add so git diff includes new files created by the contender
-    _run_git(["add", "-N", "."], cwd=wt_path)
-    diff_proc = _run_git(["diff", "HEAD"], cwd=wt_path)
+    New files are included via intent-to-add; build junk (bytecode, caches) is excluded; binary hunks carry
+    full index lines so the resulting patch is always applicable with ``git apply``.
+    """
+    if not wt_path.is_dir():
+        return 0, 0, 0, ""
+    _run_git(["add", "-N", "--", ".", *_JUNK_PATHSPECS], cwd=wt_path)
+    diff_proc = _run_git(["diff", "HEAD", "--binary", "--", ".", *_JUNK_PATHSPECS], cwd=wt_path)
     diff_text = diff_proc.stdout if diff_proc.returncode == 0 else ""
 
-    files_changed = 0
-    insertions = 0
-    deletions = 0
+    files_changed = insertions = deletions = 0
     for line in diff_text.splitlines():
         if line.startswith("diff --git "):
             files_changed += 1
@@ -733,7 +733,6 @@ def _compute_worktree_diff_stats(wt_path: Path) -> Tuple[int, int, int, str]:
             insertions += 1
         elif line.startswith("-") and not line.startswith("---"):
             deletions += 1
-
     return files_changed, insertions, deletions, diff_text
 
 
