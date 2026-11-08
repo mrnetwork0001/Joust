@@ -1,0 +1,21 @@
+# Catalog entry for NousResearch/hermes-agent → plugin-catalog/joust.yaml
+# Replace `sha` with the full 40-char SHA of the PUSHED commit being submitted (keep the quotes).
+name: joust
+repo: https://github.com/mrnetwork0001/Joust
+sha: "0000000000000000000000000000000000000000"
+title: Joust
+description: "Parallel Git-worktree arena for coding tasks. joust_launch provisions one detached git worktree per contender (2 to 4) under the profile's plugin-data folder, mirroring uncommitted tracked edits, and inside an agent turn launches one Hermes subagent per contender through ctx.subagent_lifecycle; a tool_request middleware rewrites each child session's file paths, V4A patch headers, search roots and terminal workdir into its own worktree and a pre_tool_call hook vetoes escapes; joust_evaluate runs the bout's test or benchmark command in every worktree through the Hermes terminal tool and scores Correctness 60 / Speed 25 / Diff minimalism 15; joust_merge applies the winner with git apply after saving a rollback patch, behind Hermes's human-approval gate. Also adds /joust, `hermes joust`, the bundled joust-arena skill and a Desktop half (/joust page, right pane, status-bar chip, palette command, ::joust-bout inline card). Disclosure — runs local git (rev-parse, worktree add/remove/prune, add -N, diff, apply, apply -R; init/add/commit for its demo repo and copy fallback) against the repository you name, registers worktrees in that repository's .git/worktrees until joust_merge action=cleanup, and writes the winning patch into your working tree with git apply (reversible from the saved patch). Test commands run through the Hermes terminal tool (approval gates, dangerous-command guards and the configured terminal backend apply), also when a contender subagent finishes (auto_evaluate_on_stop, default on); only the self-contained demo uses a bounded subprocess with plugin-authored commands. Captured output is secret-scrubbed with a stdlib regex and stored, with diffs, goals and repository paths, in <HERMES_HOME>/plugin-data/joust/joust.db (SQLite); bout snapshots are broadcast to connected Hermes Desktop windows as plugin.joust.bout.updated and the Desktop half polls the dashboard API while visible. No network calls, no credentials, no telemetry, no Python dependencies. Linux and macOS."
+maintainer: mrnetwork0001
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/mrnetwork0001/Joust#readme
+version: "0.1.0"
+# image: https://raw.githubusercontent.com/mrnetwork0001/Joust/<sha>/assets/banner.png
+screenshots: []
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [joust_launch, joust_evaluate, joust_diff, joust_steer, joust_merge, joust_status, joust_crossfire, joust_report]
+  provides_hooks: [pre_tool_call, post_tool_call, subagent_start, subagent_stop]
+  provides_middleware: [tool_request]
+  requires_env: []
