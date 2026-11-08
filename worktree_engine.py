@@ -1719,7 +1719,7 @@ if __name__ == "__main__":
             {
                 "name": "hash-bucket-index",
                 "strategy": "Group valid asks by price into a collections.deque hash table for O(1) price-level matching.",
-                "model": "hermes-4-405b",
+                "model": "nousresearch/hermes-4-405b",
             },
             {
                 "name": "bisect-sorted-book",
@@ -1743,7 +1743,7 @@ if __name__ == "__main__":
         contender_id="hash-bucket-index",
         guidance="Implemented O(1) deque price-bucket lookup with strict positive qty guard.",
         write_files={
-            "order_matcher.py": '''"""O(N+M) hash-bucket order-book matching engine."""
+            "order_matcher.py": '''"""O(N+M) hash-bucket order-book matching engine with partial fills."""
 
 from collections import defaultdict, deque
 from typing import Deque, Dict, List, Tuple
