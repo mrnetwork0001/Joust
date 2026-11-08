@@ -478,3 +478,24 @@ class TestHermesChain(unittest.TestCase):
         self.assertIn("Joust command error", run("judge bout-doesnotexist"))
         self.assertEqual(self.hp.get_plugin_commands()["joust"]["plugin"], "joust")
 
+    def test_12_cli_subcommand_entry_runs_under_argparse(self) -> None:
+        entry = self.manager._cli_commands["joust"]
+        self.assertEqual(entry["plugin_key"], "joust")
+        parser = argparse.ArgumentParser(prog="hermes")
+        sub = parser.add_subparsers(dest="command")
+        joust_parser = sub.add_parser(entry["name"], help=entry["help"])
+        entry["setup_fn"](joust_parser)
+        repo = _make_repo(Path(self._tmp.name))
+        bout_id = self._launch(repo)["bout_id"]
+        for argv, check in (
+            (["joust", "list"], lambda out: self.assertGreaterEqual(out["total_bouts"], 1)),
+            (["joust", "judge", bout_id], lambda out: self.assertEqual(out["bout_id"], bout_id)),
+        ):
+            ns = parser.parse_args(argv)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                entry["handler_fn"](ns)
+            check(json.loads(buf.getvalue()))
+
+    # ---- 6. the real ctx.subagent_lifecycle outside an active parent turn ---------------------------------
+
