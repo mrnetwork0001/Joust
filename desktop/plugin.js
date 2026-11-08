@@ -11,6 +11,30 @@ function notifyUser(kind, message) {
   }
 }
 
+// Small status chips shared by the inline card and the arena page.
+function signalChips(c) {
+  const chips = []
+  if (c.model) chips.push({ key: 'model', text: c.model, cls: 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)' })
+  if (c.flaky) chips.push({ key: 'flaky', text: '⚠ FLAKY', cls: 'bg-amber-500/15 text-amber-300' })
+  const runs = Array.isArray(c.runs) ? c.runs : []
+  if (runs.length > 1) {
+    const ok = runs.filter(r => r && r.exit_code === 0).length
+    chips.push({ key: 'runs', text: '🛡 ' + ok + '/' + runs.length + ' runs', cls: ok === runs.length ? 'bg-emerald-500/10 text-emerald-300' : 'bg-rose-500/10 text-rose-300' })
+  }
+  if (c.crossfire_total > 0) {
+    const clean = c.crossfire_survived === c.crossfire_total
+    chips.push({ key: 'xfire', text: '🎯 ' + c.crossfire_survived + '/' + c.crossfire_total + ' rivals', cls: clean ? 'bg-emerald-500/10 text-emerald-300' : 'bg-rose-500/10 text-rose-300' })
+  }
+  if (c.branch_ref) chips.push({ key: 'branch', text: '⎇ ' + c.branch_ref, cls: 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)' })
+  return chips.map(ch => {
+    return jsx('span', {
+      className: 'rounded px-1.5 py-0.5 font-mono text-[10px] ' + ch.cls,
+      title: ch.key === 'xfire' ? 'Crossfire: rivals\' test volleys survived' : ch.key === 'runs' ? 'Flake Shield: passing runs' : undefined,
+      children: ch.text
+    }, ch.key)
+  })
+}
+
 function navigateTo(path) {
   if (sdk.host && typeof sdk.host.navigate === 'function') {
     sdk.host.navigate(path)
