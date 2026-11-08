@@ -126,3 +126,24 @@ class TestSubagentFlow(unittest.TestCase):
             self.assertTrue(c["subagent_session_id"].startswith("child-sess-"), c)
             self.assertEqual(worktree_engine.get_session_worktree(c["subagent_session_id"]), c["worktree_path"])
 
+    def test_middleware_jails_child_session_tools_into_its_worktree(self) -> None:
+        bout = self._launch()
+        a, b = bout["contenders"]
+        # Relative path from contender A's child session lands in A's worktree
+        out = joust_pkg._on_tool_request(
+            tool_name="write_file", args={"path": "calc.py", "content": "x"},
+            session_id=a["subagent_session_id"], task_id="", tool_call_id="tc1", turn_id="", api_request_id="",
+        )
+        self.assertEqual(out["args"]["path"], str(Path(a["worktree_path"]) / "calc.py"))
+        # Absolute path into the MAIN repo from contender B is redirected into B's worktree
+        out_b = joust_pkg._on_tool_request(
+            tool_name="read_file", args={"path": str(self.repo / "calc.py")},
+            session_id=b["subagent_session_id"],
+        )
+        self.assertEqual(out_b["args"]["path"], str(Path(b["worktree_path"]) / "calc.py"))
+        self.assertNotEqual(out["args"]["path"], out_b["args"]["path"])
+        # Terminal gets its workdir pinned; an unbound session is left untouched
+        term = joust_pkg._on_tool_request(tool_name="terminal", args={"command": "ls"}, session_id=a["subagent_session_id"])
+        self.assertEqual(term["args"]["workdir"], a["worktree_path"])
+        self.assertIsNone(joust_pkg._on_tool_request(tool_name="write_file", args={"path": "calc.py"}, session_id="someone-else"))
+
