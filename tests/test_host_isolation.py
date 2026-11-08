@@ -67,3 +67,7 @@ class _RecordLike(dict):
             raise AttributeError(name) from None
 
 
+class _SubagentLifecycleError(ValueError):
+    """Shape of agent.subagent_lifecycle.SubagentLifecycleError (a ValueError subclass)."""
+
+
