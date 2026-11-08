@@ -89,17 +89,13 @@ async def api_evaluate_bout(bout_id: str, body: Dict[str, Any] | None = None) ->
 
 @router.post("/bouts/{bout_id}/steer")
 async def api_steer_contender(bout_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Guidance only over HTTP; file writes stay on the joust_steer tool."""
     try:
         contender_id = str(body.get("contender_id") or "").strip()
         guidance = str(body.get("guidance") or "").strip()
-        write_files = body.get("write_files")
-        res = worktree_engine.steer_contender(
-            bout_id=bout_id,
-            contender_id=contender_id,
-            guidance=guidance,
-            write_files=write_files if isinstance(write_files, dict) else None,
-        )
-        return res
+        if not contender_id or not guidance:
+            raise ValueError("'contender_id' and 'guidance' are required.")
+        return worktree_engine.steer_contender(bout_id=bout_id, contender_id=contender_id, guidance=guidance)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
