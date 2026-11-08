@@ -13,6 +13,8 @@ provides_tools:
   - joust_steer
   - joust_merge
   - joust_status
+  - joust_crossfire
+  - joust_report
 provides_hooks:
   - post_tool_call
   - subagent_stop
