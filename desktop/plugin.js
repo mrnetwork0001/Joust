@@ -316,10 +316,7 @@ function JoustArenaPage({ ctx }) {
 
   useEffect(() => {
     refresh()
-    const stop = ctx.onEvent('plugin.joust.bout.updated', () => refresh())
-    return () => {
-      if (typeof stop === 'function') stop()
-    }
+    return subscribeLive(ctx, '', refresh)
   }, [ctx, refresh])
 
   const activeBout = bouts.find(b => b.bout_id === selectedBoutId) || bouts[0] || null
@@ -346,11 +343,7 @@ function JoustArenaPage({ ctx }) {
   const runEvaluate = () => {
     if (!activeBout) return
     setBusy(true)
-    ctx.rest('/bouts/' + encodeURIComponent(activeBout.bout_id) + '/evaluate', { method: 'POST', body: {} })
-      .then(() => {
-        notifyUser('info', 'Evaluated all contenders in ' + activeBout.bout_id)
-        refresh()
-      })
+    requestJudge(ctx, activeBout.bout_id, null)
       .catch(err => notifyUser('error', String(err?.message || err)))
       .finally(() => setBusy(false))
   }
@@ -402,7 +395,7 @@ function JoustArenaPage({ ctx }) {
                 type: 'button',
                 disabled: busy,
                 onClick: runEvaluate,
-                className: 'rounded-lg border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) px-3 py-1.5 text-xs font-medium text-(--ui-text-primary)',
+                className: 'rounded-lg border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) px-3 py-1.5 text-xs font-medium text-(--ui-text-primary)',
                 children: '🏁 Re-Judge All'
               }),
               activeBout && activeBout.winner_id && activeBout.status !== 'merged' && jsx('button', {
@@ -458,7 +451,7 @@ function JoustArenaPage({ ctx }) {
                           const b = bouts.find(x => x.bout_id === id)
                           if (b?.contenders?.length > 0) setSelectedContenderId(b.contenders[0].contender_id)
                         },
-                        className: 'rounded border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) px-2 py-1 text-xs text-(--ui-text-primary)',
+                        className: 'rounded border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) px-2 py-1 text-xs text-(--ui-text-primary)',
                         children: bouts.map(b =>
                           jsx('option', {
                             value: b.bout_id,
@@ -469,7 +462,7 @@ function JoustArenaPage({ ctx }) {
                     ]
                   }),
                   activeBout && jsxs('div', {
-                    className: 'rounded-xl border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) p-3 text-xs',
+                    className: 'rounded-xl border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) p-3 text-xs',
                     children: [
                       jsx('div', { className: 'font-semibold text-(--ui-text-primary)', children: activeBout.title }),
                       jsx('div', { className: 'mt-1 text-(--ui-text-secondary)', children: activeBout.goal }),
@@ -496,8 +489,8 @@ function JoustArenaPage({ ctx }) {
                         onClick: () => setSelectedContenderId(c.contender_id),
                         className: 'cursor-pointer rounded-xl border p-3 transition ' + (
                           isSelected
-                            ? 'border-(--ui-accent) bg-(--ui-surface-secondary)'
-                            : 'border-(--ui-stroke-primary) bg-(--ui-surface-primary) hover:bg-(--ui-surface-secondary)'
+                            ? 'border-(--ui-accent) bg-(--ui-bg-secondary)'
+                            : 'border-(--ui-stroke-primary) bg-(--ui-bg-primary) hover:bg-(--ui-bg-secondary)'
                         ),
                         children: [
                           jsxs('div', {
@@ -539,7 +532,8 @@ function JoustArenaPage({ ctx }) {
                               jsx('span', { children: '+' + c.insertions + ' / -' + c.deletions + ' LOC' }),
                               jsx('span', {
                                 children: 'C:' + (bd.correctness ?? 0) + ' S:' + (bd.speed ?? 0) + ' M:' + (bd.minimalism ?? 0)
-                              })
+                              }),
+                              ...signalChips(c)
                             ]
                           })
                         ]
@@ -552,7 +546,7 @@ function JoustArenaPage({ ctx }) {
                 className: 'flex flex-col gap-3 lg:col-span-7',
                 children: [
                   activeContender && jsxs('div', {
-                    className: 'flex flex-col gap-3 rounded-xl border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) p-4',
+                    className: 'flex flex-col gap-3 rounded-xl border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) p-4',
                     children: [
                       jsxs('div', {
                         className: 'flex items-center justify-between border-b border-(--ui-stroke-primary) pb-2',
@@ -588,7 +582,7 @@ function JoustArenaPage({ ctx }) {
                         children: 'Verification & Benchmark Output'
                       }),
                       jsx('pre', {
-                        className: 'max-h-52 overflow-y-auto rounded border border-(--ui-stroke-primary) bg-(--ui-surface-primary) p-3 font-mono text-[11px] text-(--ui-text-secondary)',
+                        className: 'max-h-52 overflow-y-auto rounded border border-(--ui-stroke-primary) bg-(--ui-bg-primary) p-3 font-mono text-[11px] text-(--ui-text-secondary)',
                         children: activeContender.test_output || 'Not evaluated yet.'
                       })
                     ]
