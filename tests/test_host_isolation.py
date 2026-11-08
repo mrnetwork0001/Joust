@@ -175,3 +175,65 @@ class _JoustCase(unittest.TestCase):
         return {r["contender_id"]: dict(r) for r in rows}
 
 
+class TestRemoteFacadeContracts(_JoustCase):
+    """``ctx.subagent_lifecycle`` as a host remote facade: plain-data handles in, plain-data handles out."""
+
+    def test_create_bout_accepts_plain_dict_handle_and_steers_with_that_dict(self) -> None:
+        lifecycle = _FakeLifecycle(handle_factory=_plain_handle)
+        bout = self._launch(_FakeCtx(lifecycle))
+        self.assertEqual(len(lifecycle.launched), 2)
+        rows = self._handle_rows(bout["bout_id"])
+        for cid, row in rows.items():
+            self.assertEqual(row["status"], "running", row)
+            self.assertTrue(row["subagent_session_id"].startswith("child-sess-"), row)
+            stored = json.loads(row["subagent_handle_json"])
+            self.assertEqual(set(stored), set(_HANDLE_FIELDS))
+            self.assertEqual(stored["correlation_id"], f"{bout['bout_id']}:{cid}")
+        res = json.loads(tools.joust_steer({"bout_id": bout["bout_id"], "contender_id": "sum-builtin",
+                                            "guidance": "Use sum()"}))
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(res["steered_live_subagent"])
+        (handle, text), = lifecycle.steered
+        self.assertIsInstance(handle, dict)
+        self.assertEqual(handle, json.loads(rows["sum-builtin"]["subagent_handle_json"]))
+        self.assertEqual(text, "Use sum()")
+
+    def test_create_bout_accepts_record_like_handle_without_to_dict(self) -> None:
+        lifecycle = _FakeLifecycle(handle_factory=lambda sid, cid: _RecordLike(_plain_handle(sid, cid)))
+        bout = self._launch(_FakeCtx(lifecycle))
+        rows = self._handle_rows(bout["bout_id"])
+        for row in rows.values():
+            self.assertEqual(json.loads(row["subagent_handle_json"])["parent_session_id"], "parent-sess")
+            self.assertEqual(row["status"], "running")
+
+    def test_launch_raising_lifecycle_error_falls_back_to_ready(self) -> None:
+        # The real service raises SubagentLifecycleError("No active Hermes parent session is available.")
+        # outside a parent turn; from inside the host it is re-raised as a plain ValueError.
+        for exc in (_SubagentLifecycleError("No active Hermes parent session is available."),
+                    ValueError("No active Hermes parent session is available."),
+                    RuntimeError("the plugin host for this profile exited (code -9)")):
+            with self.subTest(error=type(exc).__name__):
+                bout = self._launch(_FakeCtx(_FakeLifecycle(launch_error=exc)))
+                for c in bout["contenders"]:
+                    self.assertEqual(c["status"], "ready", c)
+                    self.assertEqual(c["subagent_session_id"], "")
+                    self.assertTrue(Path(c["worktree_path"]).is_dir())
+                rows = self._handle_rows(bout["bout_id"])
+                self.assertTrue(all(r["subagent_handle_json"] == "{}" for r in rows.values()), rows)
+
+    def test_ctx_without_lifecycle_facade_leaves_contenders_ready(self) -> None:
+        bout = self._launch(_FakeCtx(lifecycle=None))
+        self.assertEqual({c["status"] for c in bout["contenders"]}, {"ready"})
+
+    def test_steer_tolerates_facade_raising_and_still_records_guidance(self) -> None:
+        lifecycle = _FakeLifecycle(steer_error=RuntimeError("the plugin host for this profile exited"))
+        bout = self._launch(_FakeCtx(lifecycle))
+        res = json.loads(tools.joust_steer({"bout_id": bout["bout_id"], "contender_id": "plus-operator",
+                                            "guidance": "Try harder", "write_files": {"NOTES.md": "hint"}}))
+        self.assertTrue(res["ok"], res)
+        self.assertFalse(res["steered_live_subagent"])
+        self.assertEqual(res["written_files"], ["NOTES.md"])
+        notes = [c["steering_notes"] for c in res["bout"]["contenders"] if c["contender_id"] == "plus-operator"][0]
+        self.assertEqual([n["guidance"] for n in notes], ["Try harder"])
+
+
