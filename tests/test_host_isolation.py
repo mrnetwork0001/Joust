@@ -71,3 +71,37 @@ class _SubagentLifecycleError(ValueError):
     """Shape of agent.subagent_lifecycle.SubagentLifecycleError (a ValueError subclass)."""
 
 
+class _FakeLifecycle:
+    """``launch()`` fires ``subagent_start`` synchronously on the caller's thread before returning (the real
+    service does this at the end of ``_build_child_preserving_parent_tools``) and returns ``handle_factory``'s
+    value; ``steer`` records the handle it was given."""
+
+    def __init__(self, handle_factory=_plain_handle, launch_error: Optional[BaseException] = None,
+                 steer_error: Optional[BaseException] = None) -> None:
+        self.handle_factory = handle_factory
+        self.launch_error = launch_error
+        self.steer_error = steer_error
+        self.launched: List[Dict[str, Any]] = []
+        self.steered: List[tuple] = []
+        self.counter = 0
+
+    def launch(self, request: Any) -> Any:
+        if self.launch_error is not None:
+            raise self.launch_error
+        req = dict(request)
+        self.counter += 1
+        sid, sub_id = f"child-sess-{self.counter}", f"sub-{self.counter}"
+        joust_pkg._on_subagent_start(
+            parent_session_id="parent-sess", parent_turn_id="turn-1", parent_subagent_id="",
+            child_session_id=sid, child_subagent_id=sub_id, child_role=req["role"], child_goal=req["goal"],
+        )
+        self.launched.append(req)
+        return self.handle_factory(sub_id, req.get("correlation_id"))
+
+    def steer(self, handle: Any, text: str) -> bool:
+        if self.steer_error is not None:
+            raise self.steer_error
+        self.steered.append((handle, text))
+        return True
+
+
