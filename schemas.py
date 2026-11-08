@@ -228,6 +228,50 @@ JOUST_STATUS = {
     },
 }
 
+JOUST_CROSSFIRE = {
+    "name": "joust_crossfire",
+    "description": (
+        "Crossfire: fire every contender's new or changed test files at every rival worktree. A contender survives a rival "
+        "when it passes that rival's tests; survival rate becomes the first leaderboard tiebreak, so the winner must beat "
+        "its rivals' tests too. Tests run through the Hermes terminal tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "bout_id": {"type": "string", "description": "Bout ID returned by joust_launch."},
+            "timeout_seconds": {"type": "integer", "description": "Per-volley timeout (clamped to 5..600 s)."},
+            "test_globs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Glob patterns identifying test files (default: test_*.py, *_test.py, tests/**, *.test.*, *.spec.* ...).",
+            },
+            "command_template": {
+                "type": "string",
+                "description": "Command to run a volley with {files} replaced by the copied test paths (default: python3 -m unittest -q {files} for Python, else the bout command).",
+            },
+        },
+        "required": ["bout_id"],
+    },
+}
+
+JOUST_REPORT = {
+    "name": "joust_report",
+    "description": (
+        "Write a markdown bout report (scoreboard, Flake Shield runs, Crossfire results, diffs, outputs, timeline) and keep every "
+        "contender as a joust/<bout>/<contender> branch in the repository so no attempt is lost."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "bout_id": {"type": "string", "description": "Bout ID."},
+            "write_path": {"type": "string", "description": "Optional path inside the bout repository for a copy of the report (e.g. docs/joust/bout.md)."},
+            "keep_branches": {"type": "boolean", "description": "Snapshot contenders as branches first (default: true)."},
+            "include_markdown": {"type": "boolean", "description": "Return the full markdown instead of a 1200-char preview."},
+        },
+        "required": ["bout_id"],
+    },
+}
+
 ALL_SCHEMAS = [
     JOUST_LAUNCH,
     JOUST_EVALUATE,
