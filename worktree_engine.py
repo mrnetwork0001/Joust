@@ -251,12 +251,105 @@ def bind_session_worktree(
         _UNBOUND_SESSIONS.discard(session_id)
 
 
-def get_session_worktree(session_id: Optional[str], task_id: Optional[str] = None) -> Optional[str]:
-    """Return the bound worktree path for a session_id or task_id, if any."""
+def bind_contender_subagent(
+    bout_id: str, contender_id: str, child_session_id: str, child_subagent_id: str = ""
+) -> bool:
+    """Bind a live child session to its contender worktree and persist the identity in the DB."""
+    if not child_session_id:
+        return False
+    conn = get_db()
     with _LOCK:
-        for key in (session_id, task_id):
-            if key and key in _ACTIVE_SESSION_WORKTREES:
-                return _ACTIVE_SESSION_WORKTREES[key]
+        row = conn.execute(
+            "SELECT c.worktree_path, b.repo_path FROM contenders c JOIN bouts b ON b.bout_id = c.bout_id "
+            "WHERE c.bout_id = ? AND c.contender_id = ?",
+            (bout_id, contender_id),
+        ).fetchone()
+        if row is None:
+            return False
+        bind_session_worktree(child_session_id, bout_id, contender_id, row["worktree_path"], row["repo_path"])
+        conn.execute(
+            "UPDATE contenders SET subagent_session_id = ?, status = 'running', updated_at = ? "
+            "WHERE bout_id = ? AND contender_id = ?",
+            (child_session_id, _now_iso(), bout_id, contender_id),
+        )
+        conn.commit()
+    record_event(bout_id, "contender.subagent_started", f"Bound child session {child_session_id} ({child_subagent_id or 'n/a'}).", contender_id)
+    return True
+
+
+def on_subagent_started(child_session_id: str, child_subagent_id: str = "", child_goal: str = "") -> bool:
+    """subagent_start hook entry.
+
+    Hermes fires this hook *inside* ``service.launch()``. Since ``create_bout`` inserts the contender rows
+    before launching, the marker path normally binds directly; otherwise the session is parked under both
+    the child's subagent id and the goal marker and ``create_bout`` pops it when ``launch()`` returns.
+    """
+    if not child_session_id:
+        return False
+    marker = parse_contender_marker(child_goal)
+    if marker and bind_contender_subagent(marker[0], marker[1], child_session_id, child_subagent_id):
+        return True
+    with _LOCK:
+        if child_subagent_id:
+            _PENDING_SUBAGENT_SESSIONS[child_subagent_id] = child_session_id
+        if marker:
+            _PENDING_SUBAGENT_SESSIONS[contender_marker(*marker)] = child_session_id
+    return False
+
+
+def _pop_pending_session(child_subagent_id: str, bout_id: str = "", contender_id: str = "") -> str:
+    with _LOCK:
+        by_id = _PENDING_SUBAGENT_SESSIONS.pop(child_subagent_id, "") if child_subagent_id else ""
+        by_marker = _PENDING_SUBAGENT_SESSIONS.pop(contender_marker(bout_id, contender_id), "") if bout_id else ""
+        return by_id or by_marker
+
+
+def _db_lookup_session(session_id: str) -> Optional[Tuple[str, str, str, str]]:
+    """Fallback for bindings lost to a plugin-host restart: (bout_id, contender_id, worktree_path, repo_path).
+
+    Cheap on the hot path: skipped entirely until Joust has ever created its database, and negative
+    results are cached so ordinary (non-contender) sessions cost one lookup at most.
+    """
+    if not session_id or session_id in _UNBOUND_SESSIONS:
+        return None
+    if not (get_data_dir() / "joust.db").exists():
+        return None
+    try:
+        row = get_db().execute(
+            "SELECT c.bout_id, c.contender_id, c.worktree_path, b.repo_path FROM contenders c "
+            "JOIN bouts b ON b.bout_id = c.bout_id WHERE c.subagent_session_id = ? "
+            "ORDER BY c.updated_at DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    except Exception:
+        return None
+    if row is None or not Path(row["worktree_path"]).is_dir():
+        with _LOCK:
+            if len(_UNBOUND_SESSIONS) > _UNBOUND_CACHE_MAX:
+                _UNBOUND_SESSIONS.clear()
+            _UNBOUND_SESSIONS.add(session_id)
+        return None
+    bind_session_worktree(session_id, row["bout_id"], row["contender_id"], row["worktree_path"], row["repo_path"])
+    return row["bout_id"], row["contender_id"], row["worktree_path"], row["repo_path"]
+
+
+def get_session_binding(session_id: Optional[str], task_id: Optional[str] = None) -> Optional[Dict[str, str]]:
+    """Return {bout_id, contender_id, worktree_path, repo_path} for a bound child session, else None."""
+    for key in (session_id, task_id):
+        if not key:
+            continue
+        with _LOCK:
+            if key in _ACTIVE_SESSION_WORKTREES:
+                bout_id, cid = _ACTIVE_SESSION_CONTENDERS.get(key, ("", ""))
+                return {
+                    "bout_id": bout_id,
+                    "contender_id": cid,
+                    "worktree_path": _ACTIVE_SESSION_WORKTREES[key],
+                    "repo_path": _ACTIVE_SESSION_REPOS.get(key, ""),
+                }
+        found = _db_lookup_session(key)
+        if found:
+            return {"bout_id": found[0], "contender_id": found[1], "worktree_path": found[2], "repo_path": found[3]}
     return None
 
 
