@@ -503,6 +503,54 @@ def record_event(bout_id: str, event_type: str, detail: str, contender_id: str =
         conn.commit()
 
 
+_JUNK_PATHSPECS = [":(exclude)__pycache__", ":(exclude)*.pyc", ":(exclude).pytest_cache", ":(exclude)node_modules",
+                   ":(exclude).joust_dirty.patch", ":(exclude).mypy_cache", ":(exclude).ruff_cache"]
+MIN_TIMEOUT_SECONDS = 5
+MAX_TIMEOUT_SECONDS = 600
+MAX_RUNS = 7
+
+
+def clamp_timeout(value: Any, default: int = 60) -> int:
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        v = default
+    return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, v))
+
+
+def _validate_contenders(contenders: Any) -> List[Dict[str, str]]:
+    if not isinstance(contenders, list) or len(contenders) < 2:
+        raise ValueError("A Joust bout requires at least 2 contenders.")
+    if len(contenders) > 4:
+        raise ValueError("A Joust bout supports at most 4 contenders per run.")
+    cleaned: List[Dict[str, str]] = []
+    names_seen: set = set()
+    ids_seen: set = set()
+    for idx, spec in enumerate(contenders, start=1):
+        if not isinstance(spec, dict):
+            raise ValueError("Each contender must be an object with 'name' and 'strategy'.")
+        name = str(spec.get("name") or "").strip()
+        strategy = str(spec.get("strategy") or "").strip()
+        if not name:
+            raise ValueError(f"Contender #{idx} has no name.")
+        if name.lower() in names_seen:
+            raise ValueError(f"Duplicate contender name {name!r}; names must be unique.")
+        names_seen.add(name.lower())
+        cid = _slugify(name, f"contender-{idx}")
+        if cid in ids_seen:
+            cid = f"{cid}-{idx}"
+        ids_seen.add(cid)
+        cleaned.append({"name": name, "strategy": strategy, "model": str(spec.get("model") or "").strip(), "cid": cid})
+    return cleaned
+
+
+def _remove_worktree(repo_root: Path, wt: Path) -> None:
+    if wt.exists():
+        _run_git(["worktree", "remove", "--force", str(wt)], cwd=repo_root)
+        if wt.exists():
+            shutil.rmtree(wt, ignore_errors=True)
+
+
 def create_bout(
     title: str,
     goal: str,
