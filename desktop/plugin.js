@@ -664,10 +664,7 @@ function JoustStatusChip({ ctx }) {
         .catch(() => {})
     }
     load()
-    const stop = ctx.onEvent('plugin.joust.bout.updated', load)
-    return () => {
-      if (typeof stop === 'function') stop()
-    }
+    return subscribeLive(ctx, '', load)
   }, [ctx])
 
   return jsx('button', {
@@ -687,6 +684,7 @@ export default {
         {
           id: 'arena-page',
           area: sdk.ROUTES_AREA,
+          title: 'Joust Arena',
           data: { path: '/joust' },
           render: () => jsx(JoustArenaPage, { ctx })
         },
@@ -702,7 +700,7 @@ export default {
       id: 'arena-pane',
       area: 'panes',
       title: 'Joust Arena',
-      data: { placement: 'right', width: '280px' },
+      data: { placement: 'right', width: '280px', collapsible: true },
       render: () => jsx(JoustRightPane, { ctx })
     })
 
