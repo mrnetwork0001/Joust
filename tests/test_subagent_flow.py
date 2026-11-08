@@ -218,3 +218,13 @@ class TestSubagentFlow(unittest.TestCase):
         self.assertEqual(judged["sum-builtin"]["exit_code"], -1)
         self.assertEqual(details["status"], "partial")
 
+    def test_post_tool_call_counts_contender_activity(self) -> None:
+        bout = self._launch()
+        a = bout["contenders"][0]
+        for _ in range(3):
+            joust_pkg._on_post_tool_call(tool_name="read_file", args={}, result="", session_id=a["subagent_session_id"])
+        details = worktree_engine.get_bout_details(bout["bout_id"])
+        counts = {c["contender_id"]: c["tool_calls_count"] for c in details["contenders"]}
+        self.assertEqual(counts["plus-operator"], 3)
+        self.assertEqual(counts["sum-builtin"], 0)
+
