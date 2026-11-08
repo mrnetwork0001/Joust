@@ -163,3 +163,10 @@ class TestSubagentFlow(unittest.TestCase):
         # A clean call is not vetoed, and the veto was consumed
         self.assertIsNone(joust_pkg._on_pre_tool_call(tool_name="write_file", args={"path": "calc.py"}, session_id=sid, tool_call_id="tc-ok"))
 
+    def test_pre_tool_call_asks_for_human_approval_before_merge(self) -> None:
+        approve = joust_pkg._on_pre_tool_call(tool_name="joust_merge", args={"bout_id": "bout-x", "action": "apply"})
+        self.assertEqual(approve["action"], "approve")
+        self.assertEqual(approve["rule_key"], "joust:merge")
+        self.assertIsNone(joust_pkg._on_pre_tool_call(tool_name="joust_merge", args={"bout_id": "bout-x", "action": "dry_run"}))
+        self.assertIsNone(joust_pkg._on_pre_tool_call(tool_name="joust_evaluate", args={"bout_id": "bout-x"}))
+
