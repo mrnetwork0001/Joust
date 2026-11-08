@@ -74,6 +74,16 @@ def close_cached_dbs() -> None:
         _DB_CACHE.clear()
 
 
+_SECRET_PATTERNS = (
+    re.compile(r"\b(?:sk|rk|pk)[-_](?:live|test|proj|ant|or)?[-_]?[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs)_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bxox[abp]-[A-Za-z0-9-]{20,}\b"),
+    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|secret[_-]?key|password|authorization)\s*[:=]\s*['\"]?[A-Za-z0-9_\-./+]{8,}"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{16,}"),
+)
+
+
 def _redact(text: str) -> str:
     if not text:
         return ""
