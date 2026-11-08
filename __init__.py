@@ -87,6 +87,25 @@ def _on_post_tool_call(**kwargs: Any) -> None:
         logger.debug("Joust post_tool_call update skipped: %s", exc)
 
 
+def _on_subagent_start(**kwargs: Any) -> None:
+    """Lifecycle hook (fires inside subagent launch): bind the child's session to its contender worktree.
+
+    Hermes passes ``child_session_id``, ``child_subagent_id`` and ``child_goal``; the goal carries the
+    ``joust:bout=...;contender=...`` marker written by ``joust_launch``.
+    """
+    try:
+        worktree_engine.on_subagent_started(
+            child_session_id=str(kwargs.get("child_session_id") or ""),
+            child_subagent_id=str(kwargs.get("child_subagent_id") or ""),
+            child_goal=str(kwargs.get("child_goal") or ""),
+        )
+    except Exception as exc:
+        logger.debug("Joust subagent_start binding skipped: %s", exc)
+
+
+_AUTO_JUDGE_THREADS: Dict[str, threading.Thread] = {}
+
+
 def _on_subagent_stop(**kwargs: Any) -> None:
     """Lifecycle hook: when a contender subagent finishes, optionally auto-evaluate its worktree."""
     corr_id = str(kwargs.get("correlation_id") or "")
