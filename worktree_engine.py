@@ -415,6 +415,14 @@ def _jail_path_inside_worktree(raw_path: str, worktree_root: Path, main_repo_roo
     return str(target)
 
 
+_PATH_KEYS = ("path", "file_path", "filepath", "target_file", "directory", "dir_path", "cwd", "workdir")
+_DIR_KEYS = {"directory", "dir_path", "cwd", "workdir"}
+_TERMINAL_TOOLS = {"terminal", "bash", "execute_command", "run_command"}
+_CWD_DEFAULT_TOOLS = {"search_files", "list_dir", "list_directory", "glob"}
+_V4A_HEADER_RE = re.compile(r"^(\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*)(.+?)\s*$", re.M)
+_V4A_MOVE_RE = re.compile(r"^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+?)\s*$", re.M)
+
+
 def rewrite_tool_args_for_worktree(
     tool_name: str,
     args: Dict[str, Any],
