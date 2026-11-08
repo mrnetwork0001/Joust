@@ -560,148 +560,157 @@ def create_bout(
     ctx: Any = None,
     spawn_subagents: bool = True,
 ) -> Dict[str, Any]:
-    """Create a Joust bout, provision isolated Git worktrees for each contender, and optionally launch subagents."""
-    if not contenders or len(contenders) < 2:
-        raise ValueError("A Joust bout requires at least 2 contenders.")
-    if len(contenders) > 4:
-        raise ValueError("A Joust bout supports at most 4 contenders per run.")
+    """Create a Joust bout, provision isolated Git worktrees for each contender, and optionally launch subagents.
 
+    Two passes: (1) under the engine lock, persist the bout and every contender row (status 'ready') and
+    provision the worktrees, rolling everything back on failure; (2) outside the lock, launch one subagent
+    per contender. Hermes fires ``subagent_start`` inside ``launch()``, and that hook needs the DB, so the
+    lock must never be held across the launch call (host isolation relays the hook synchronously).
+    """
+    specs = _validate_contenders(contenders)
     repo_root, base_commit = resolve_git_repo(repo_path)
     bout_id = f"bout-{uuid.uuid4().hex[:8]}"
     worktrees_base = get_data_dir() / "worktrees" / bout_id
     worktrees_base.mkdir(parents=True, exist_ok=True)
 
-    # Capture any uncommitted tracked diff in the main repo so worktrees mirror the exact working state
-    dirty_diff_proc = _run_git(["diff", "HEAD"], cwd=repo_root)
+    # Uncommitted *tracked* edits (staged or not) are mirrored into every worktree; untracked files are not.
+    dirty_diff_proc = _run_git(["diff", "HEAD", "--binary"], cwd=repo_root)
     dirty_patch = dirty_diff_proc.stdout if dirty_diff_proc.returncode == 0 else ""
+    carry_over = "none" if not dirty_patch.strip() else "applied"
 
     now = _now_iso()
     conn = get_db()
-    created_contenders: List[Dict[str, Any]] = []
-    seen_ids: set[str] = set()
+    created: List[Dict[str, Any]] = []
+    provisioned: List[Path] = []
 
     with _LOCK:
-        conn.execute(
-            """
-            INSERT INTO bouts (
-                bout_id, title, goal, repo_path, base_commit, test_command, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)
-            """,
-            (bout_id, title.strip(), goal.strip(), str(repo_root), base_commit, test_command.strip(), now, now),
-        )
-
-        for idx, spec in enumerate(contenders, start=1):
-            raw_name = str(spec.get("name") or f"contender-{idx}").strip()
-            cid = _slugify(raw_name, f"contender-{idx}")
-            if cid in seen_ids:
-                cid = f"{cid}-{idx}"
-            seen_ids.add(cid)
-
-            strategy = str(spec.get("strategy") or "").strip()
-            model = str(spec.get("model") or "").strip()
-            wt_path = (worktrees_base / cid).resolve()
-
-            add_res = _run_git(["worktree", "add", "--detach", str(wt_path), base_commit], cwd=repo_root)
-            if add_res.returncode != 0:
-                # Fallback: clean copy of repo files if git worktree is locked
-                shutil.copytree(
-                    repo_root,
-                    wt_path,
-                    dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns(".git", "__pycache__", ".venv", "node_modules"),
-                )
-                _run_git(["init"], cwd=wt_path)
-                _run_git(["add", "-A"], cwd=wt_path)
-                _run_git(
-                    ["-c", "user.name=Joust", "-c", "user.email=joust@local", "commit", "-m", "base"],
-                    cwd=wt_path,
-                )
-            elif dirty_patch.strip():
-                patch_file = wt_path / ".joust_dirty.patch"
-                patch_file.write_text(dirty_patch, encoding="utf-8")
-                _run_git(["apply", "--whitespace=nowarn", str(patch_file)], cwd=wt_path)
-                patch_file.unlink(missing_ok=True)
-
-            subagent_session_id = ""
-            subagent_handle_dict: Dict[str, Any] = {}
-            status = "ready"
-
-            if spawn_subagents and ctx is not None:
-                try:
-                    from agent.subagent_lifecycle import SubagentLaunchRequest
-
-                    service = getattr(ctx, "subagent_lifecycle", None)
-                    if service is not None:
-                        sub_goal = (
-                            f"[Joust Contender: {raw_name}]\n"
-                            f"Isolated Worktree Directory: {wt_path}\n"
-                            f"Problem Goal: {goal}\n"
-                            f"Assigned Strategy: {strategy}\n"
-                            f"Verification Command: {test_command}\n"
-                            f"IMPORTANT: Perform all file reads, edits, and test executions strictly inside {wt_path}."
-                        )
-                        req_kwargs: Dict[str, Any] = {
-                            "goal": sub_goal,
-                            "context": f"Joust bout {bout_id} contender {cid} in isolated worktree {wt_path}",
-                            "role": "leaf",
-                            "correlation_id": f"{bout_id}:{cid}",
-                            "metadata": {"bout_id": bout_id, "contender_id": cid, "worktree_path": str(wt_path)},
-                        }
-                        if model:
-                            req_kwargs["model"] = model
-                        handle = service.launch(SubagentLaunchRequest(**req_kwargs))
-                        subagent_handle_dict = handle.to_dict() if hasattr(handle, "to_dict") else {}
-                        subagent_session_id = str(
-                            subagent_handle_dict.get("session_id")
-                            or subagent_handle_dict.get("child_session_id")
-                            or getattr(handle, "session_id", "")
-                            or ""
-                        )
-                        if subagent_session_id:
-                            bind_session_worktree(subagent_session_id, bout_id, cid, str(wt_path))
-                        status = "running"
-                except Exception:
-                    # Outside an active parent turn (e.g., CLI/Dashboard/direct tool test), worktree is ready
-                    status = "ready"
-
+        try:
             conn.execute(
                 """
-                INSERT INTO contenders (
-                    contender_id, bout_id, name, strategy, model, worktree_path,
-                    subagent_session_id, subagent_handle_json, status, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO bouts (
+                    bout_id, title, goal, repo_path, base_commit, test_command, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)
                 """,
-                (
-                    cid,
-                    bout_id,
-                    raw_name,
-                    strategy,
-                    model,
-                    str(wt_path),
-                    subagent_session_id,
-                    json.dumps(subagent_handle_dict),
-                    status,
-                    now,
-                ),
+                (bout_id, title.strip(), goal.strip(), str(repo_root), base_commit, test_command.strip(), now, now),
             )
-            created_contenders.append(
-                {
-                    "contender_id": cid,
-                    "name": raw_name,
-                    "strategy": strategy,
-                    "model": model,
-                    "worktree_path": str(wt_path),
-                    "status": status,
-                    "subagent_session_id": subagent_session_id,
+            for spec in specs:
+                cid = spec["cid"]
+                wt_path = (worktrees_base / cid).resolve()
+                if wt_path.exists() and not wt_path.is_dir():
+                    raise ValueError(f"Worktree path {wt_path} exists and is not a directory.")
+
+                add_res = _run_git(["worktree", "add", "--detach", str(wt_path), base_commit], cwd=repo_root)
+                provisioned.append(wt_path)
+                if add_res.returncode != 0:
+                    # Fallback when `git worktree add` is refused: copy tracked+untracked files, init a baseline.
+                    shutil.copytree(
+                        repo_root, wt_path, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns(".git", "__pycache__", ".venv", "node_modules"),
+                    )
+                    _run_git(["init", "-q"], cwd=wt_path)
+                    _run_git(["add", "-A"], cwd=wt_path)
+                    _run_git(["-c", "user.name=Joust", "-c", "user.email=joust@local", "commit", "-q", "-m", "joust: base"], cwd=wt_path)
+                elif dirty_patch.strip():
+                    patch_file = wt_path / ".joust_dirty.patch"
+                    patch_file.write_text(dirty_patch, encoding="utf-8")
+                    applied = _run_git(["apply", "--whitespace=nowarn", str(patch_file)], cwd=wt_path)
+                    patch_file.unlink(missing_ok=True)
+                    if applied.returncode != 0:
+                        carry_over = "failed"
+                    else:
+                        # Snapshot the carried-over state as the worktree baseline so a contender's diff
+                        # contains only its own edits and applies onto the (already dirty) main tree.
+                        _run_git(["add", "-A"], cwd=wt_path)
+                        _run_git(["-c", "user.name=Joust", "-c", "user.email=joust@local", "commit", "-q", "-m", "joust: dirty baseline"], cwd=wt_path)
+
+                conn.execute(
+                    """
+                    INSERT INTO contenders (
+                        contender_id, bout_id, name, strategy, model, worktree_path,
+                        subagent_session_id, subagent_handle_json, status, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, '', '{}', 'ready', ?)
+                    """,
+                    (cid, bout_id, spec["name"], spec["strategy"], spec["model"], str(wt_path), now),
+                )
+                created.append({"cid": cid, "name": spec["name"], "strategy": spec["strategy"], "model": spec["model"], "wt": wt_path})
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            for wt in provisioned:
+                _remove_worktree(repo_root, wt)
+            shutil.rmtree(worktrees_base, ignore_errors=True)
+            _run_git(["worktree", "prune"], cwd=repo_root)
+            raise
+
+    record_event(bout_id, "bout.launched", f"Launched bout '{title}' with {len(created)} contenders.")
+    if carry_over == "failed":
+        record_event(bout_id, "bout.warning", "Uncommitted edits could not be applied to the worktrees; contenders start from HEAD.")
+
+    # ---- pass 2: launch subagents (lock NOT held; subagent_start binds via the marker in the goal)
+    spawned = 0
+    spawn_errors: Dict[str, str] = {}
+    if spawn_subagents:
+        service = getattr(ctx, "subagent_lifecycle", None) if ctx is not None else None
+        if service is None:
+            reason = "no plugin context" if ctx is None else "subagent lifecycle service unavailable"
+            for c in created:
+                spawn_errors[c["cid"]] = reason
+        else:
+            for c in created:
+                cid, wt_path = c["cid"], c["wt"]
+                sub_goal = (
+                    f"[Joust Contender: {c['name']}] ({contender_marker(bout_id, cid)})\n"
+                    f"Isolated Worktree Directory: {wt_path}\n"
+                    f"Problem Goal: {goal}\n"
+                    f"Assigned Strategy: {c['strategy']}\n"
+                    f"Verification Command: {test_command}\n"
+                    f"IMPORTANT: Perform all file reads, edits, and test executions strictly inside {wt_path}. "
+                    f"Set PYTHONDONTWRITEBYTECODE=1 when running Python."
+                )
+                req_kwargs: Dict[str, Any] = {
+                    "goal": sub_goal,
+                    "context": f"Joust bout {bout_id} contender {cid} in isolated worktree {wt_path}",
+                    "role": "leaf",
+                    "correlation_id": f"{bout_id}:{cid}",
+                    "metadata": {"bout_id": bout_id, "contender_id": cid, "worktree_path": str(wt_path)},
                 }
-            )
+                if c["model"]:
+                    req_kwargs["model"] = c["model"]
+                try:
+                    # The lifecycle service accepts a plain mapping (coerced to SubagentLaunchRequest): no private import,
+                    # and in plugins.isolation: host mode the remote facade returns a plain dict handle.
+                    handle = service.launch(req_kwargs)
+                    handle_dict = handle.to_dict() if hasattr(handle, "to_dict") else dict(handle)
+                    child_subagent_id = str(handle_dict.get("subagent_id") or "")
+                    session_id = _pop_pending_session(child_subagent_id, bout_id, cid)
+                    with _LOCK:
+                        if not session_id:
+                            for sid, bound in _ACTIVE_SESSION_CONTENDERS.items():
+                                if bound == (bout_id, cid):
+                                    session_id = sid
+                                    break
+                        if session_id:
+                            bind_session_worktree(session_id, bout_id, cid, str(wt_path), str(repo_root))
+                        conn.execute(
+                            "UPDATE contenders SET subagent_handle_json = ?, status = 'running', "
+                            "subagent_session_id = CASE WHEN ? != '' THEN ? ELSE subagent_session_id END, updated_at = ? "
+                            "WHERE bout_id = ? AND contender_id = ?",
+                            (json.dumps(handle_dict), session_id, session_id, _now_iso(), bout_id, cid),
+                        )
+                        conn.commit()
+                    spawned += 1
+                except Exception as exc:
+                    spawn_errors[cid] = f"{type(exc).__name__}: {exc}"
+        for cid, err in spawn_errors.items():
+            record_event(bout_id, "contender.spawn_failed", err, cid)
 
-        conn.commit()
-
-    record_event(bout_id, "bout.launched", f"Launched bout '{title}' with {len(created_contenders)} contenders.")
-    bout_snapshot = get_bout_details(bout_id)
-    notify_desktop("bout.updated", {"bout_id": bout_id, "bout": bout_snapshot})
-    return bout_snapshot
+    snapshot = get_bout_details(bout_id)
+    snapshot["subagents_requested"] = bool(spawn_subagents)
+    snapshot["subagents_spawned"] = spawned
+    snapshot["spawn_errors"] = spawn_errors
+    snapshot["carry_over"] = carry_over
+    notify_desktop("bout.updated", {"bout_id": bout_id, "bout": snapshot})
+    return snapshot
 
 
 def _compute_worktree_diff_stats(wt_path: Path) -> Tuple[int, int, int, str]:
