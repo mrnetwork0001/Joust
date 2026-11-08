@@ -877,151 +877,119 @@ def evaluate_bout(
     contender_id: Optional[str] = None,
     test_command_override: Optional[str] = None,
     timeout_seconds: int = 60,
+    runner: Any = None,
+    persist_command: bool = False,
+    runs: int = 1,
 ) -> Dict[str, Any]:
-    """Execute the verification & benchmark suite across contenders, compute Joust Scores, and rank the winner."""
+    """Execute the verification & benchmark suite across contenders, compute Joust Scores, and rank the winner.
+
+    Flake Shield: with ``runs`` > 1 the command is repeated; a contender must pass every run, the speed score
+    uses the median duration, and a mixed pass/fail record marks the contender ``flaky`` (never a winner).
+
+    Commands run outside the engine lock; scoring re-reads every row under the lock so concurrent
+    auto-judges (two subagents finishing together) never clobber each other's results.
+    """
     conn = get_db()
     bout_row = conn.execute("SELECT * FROM bouts WHERE bout_id = ?", (bout_id,)).fetchone()
     if bout_row is None:
         raise ValueError(f"Unknown bout_id: {bout_id!r}")
+    if bout_row["status"] == "cleaned":
+        raise ValueError(f"Bout {bout_id!r} worktrees were cleaned up; results are read-only.")
 
-    test_cmd = (test_command_override or bout_row["test_command"] or "python3 -m unittest").strip()
-    if test_command_override and test_command_override.strip() != bout_row["test_command"]:
+    stored_cmd = (bout_row["test_command"] or "python3 -m unittest").strip()
+    test_cmd = (test_command_override or stored_cmd).strip()
+    if persist_command and test_command_override and test_cmd != stored_cmd:
         with _LOCK:
             conn.execute("UPDATE bouts SET test_command = ?, updated_at = ? WHERE bout_id = ?", (test_cmd, _now_iso(), bout_id))
             conn.commit()
 
-    contender_rows = conn.execute(
-        "SELECT * FROM contenders WHERE bout_id = ? ORDER BY rowid ASC", (bout_id,)
-    ).fetchall()
-    if not contender_rows:
+    rows = conn.execute("SELECT rowid, * FROM contenders WHERE bout_id = ? ORDER BY rowid ASC", (bout_id,)).fetchall()
+    if not rows:
         raise ValueError(f"Bout {bout_id!r} has no contenders.")
+    if contender_id and not any(r["contender_id"] == contender_id or r["name"] == contender_id for r in rows):
+        raise ValueError(f"Contender {contender_id!r} not found in bout {bout_id!r}.")
 
-    raw_results: List[Dict[str, Any]] = []
-    for row in contender_rows:
+    fresh: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
         cid = row["contender_id"]
         if contender_id and cid != contender_id and row["name"] != contender_id:
-            # Keep existing metrics for non-selected contenders so relative scoring still works
-            raw_results.append(
-                {
-                    "contender_id": cid,
-                    "exit_code": int(row["exit_code"]),
-                    "tests_passed": bool(row["tests_passed"]),
-                    "duration_ms": float(row["duration_ms"]),
-                    "files_changed": int(row["files_changed"]),
-                    "insertions": int(row["insertions"]),
-                    "deletions": int(row["deletions"]),
-                    "test_output": str(row["test_output"] or ""),
-                    "evaluated_now": False,
-                }
-            )
             continue
-
         wt_path = Path(row["worktree_path"])
         files_changed, insertions, deletions, _ = _compute_worktree_diff_stats(wt_path)
-        exit_code, duration_ms, output = _run_verification_command(test_cmd, wt_path, timeout_seconds=timeout_seconds)
-        passed = exit_code == 0
-
-        # Also check if benchmark output emitted a custom JOUST_BENCHMARK_MS=<float> metric
-        bench_match = re.search(r"JOUST_BENCHMARK_MS=([0-9.]+)", output)
-        if bench_match:
-            try:
-                duration_ms = round(float(bench_match.group(1)), 2)
-            except ValueError:
-                pass
-
-        raw_results.append(
-            {
-                "contender_id": cid,
-                "exit_code": exit_code,
-                "tests_passed": passed,
-                "duration_ms": duration_ms,
-                "files_changed": files_changed,
-                "insertions": insertions,
-                "deletions": deletions,
-                "test_output": output,
-                "evaluated_now": True,
-            }
-        )
-
-    # Compute relative Joust Composite Score (0 - 100):
-    # - Correctness Gate: 60 points (60 if tests_passed else 0)
-    # - Relative Speed: 25 points (25 * (fastest_passing_ms / contender_ms))
-    # - Diff Cleanliness & Minimalism: 15 points (rewards surgical edits; penalizes zero-diff if a change was expected)
-    passing_durations = [max(0.5, r["duration_ms"]) for r in raw_results if r["tests_passed"] and r["duration_ms"] > 0]
-    fastest_ms = min(passing_durations) if passing_durations else 1.0
+        n_runs = max(1, min(MAX_RUNS, int(runs or 1)))
+        run_log: List[Dict[str, Any]] = []
+        output = ""
+        for _ in range(n_runs):
+            exit_code, wall_ms, output, bench_ms = _run_verification_command(test_cmd, wt_path, timeout_seconds=timeout_seconds, runner=runner)
+            run_log.append({"exit_code": int(exit_code), "wall_ms": wall_ms, "benchmark_ms": bench_ms})
+            if exit_code != 0 and n_runs > 1 and len(run_log) == n_runs:
+                break
+        passes = sum(1 for r in run_log if r["exit_code"] == 0)
+        all_passed = passes == len(run_log)
+        flaky = 0 < passes < len(run_log)
+        durations = [r["benchmark_ms"] if (r["benchmark_ms"] is not None and r["benchmark_ms"] > 0) else r["wall_ms"] for r in run_log]
+        duration_ms = statistics.median(durations) if durations else 0.0
+        last_exit = run_log[-1]["exit_code"]
+        if n_runs > 1:
+            spread = f"{min(durations):.2f}..{max(durations):.2f} ms"
+            header = f"[Flake Shield] {passes}/{len(run_log)} runs passed; median {duration_ms:.2f} ms (spread {spread})" + (" FLAKY" if flaky else "")
+            output = header + "\n" + output
+        fresh[cid] = {
+            "exit_code": int(last_exit if not all_passed else 0) if not flaky else 1,
+            "tests_passed": all_passed, "duration_ms": float(round(duration_ms, 2)),
+            "files_changed": files_changed, "insertions": insertions, "deletions": deletions, "test_output": output,
+            "runs": run_log, "flaky": flaky,
+        }
 
     now = _now_iso()
-    best_cid = ""
-    best_score = -1.0
-
     with _LOCK:
-        for r in raw_results:
-            cid = r["contender_id"]
-            passed = r["tests_passed"]
-            dur = max(0.5, r["duration_ms"])
-            loc_delta = r["insertions"] + r["deletions"]
-
-            correctness_pts = 60.0 if passed else 0.0
-            if passed:
-                speed_pts = round(25.0 * min(1.0, fastest_ms / dur), 2)
-            else:
-                speed_pts = round(5.0 * min(1.0, fastest_ms / max(dur, fastest_ms)), 2)
-
-            if loc_delta == 0:
-                # Unmodified worktree gets partial minimalism credit only
-                minimalism_pts = 5.0
-            else:
-                minimalism_pts = round(15.0 / (1.0 + max(0, loc_delta - 12) / 90.0), 2)
-
-            total_score = round(correctness_pts + speed_pts + minimalism_pts, 2)
-            breakdown = {
-                "correctness": correctness_pts,
-                "speed": speed_pts,
-                "minimalism": minimalism_pts,
-                "total": total_score,
-            }
-
-            if passed and total_score > best_score:
-                best_score = total_score
-                best_cid = cid
-
-            status = "passed" if passed else "failed"
+        current = conn.execute("SELECT rowid, * FROM contenders WHERE bout_id = ? ORDER BY rowid ASC", (bout_id,)).fetchall()
+        merged: List[Dict[str, Any]] = []
+        for r in current:
+            d = {k: r[k] for k in r.keys()}
+            d["rowid"] = r["rowid"]
+            d["tests_passed"] = bool(d["tests_passed"])
+            if r["contender_id"] in fresh:
+                d.update(fresh[r["contender_id"]])
+            merged.append(d)
+        best_cid, best_score = _score_rows(merged)
+        for d in merged:
+            if int(d["exit_code"]) == -1:
+                continue  # never run: leave 'ready'/'running' untouched
+            passed = bool(d["tests_passed"])
+            is_flaky = bool(d.get("flaky"))
+            status_txt = "flaky" if is_flaky else ("passed" if passed else "failed")
+            runs_json = json.dumps(d["runs"]) if isinstance(d.get("runs"), list) else (d.get("runs_json") or "[]")
             conn.execute(
                 """
                 UPDATE contenders
                 SET status = ?, tests_passed = ?, exit_code = ?, duration_ms = ?,
                     files_changed = ?, insertions = ?, deletions = ?,
-                    score = ?, score_breakdown_json = ?, test_output = ?, updated_at = ?
+                    score = ?, score_breakdown_json = ?, test_output = ?, runs_json = ?, flaky = ?, updated_at = ?
                 WHERE bout_id = ? AND contender_id = ?
                 """,
                 (
-                    status,
-                    1 if passed else 0,
-                    r["exit_code"],
-                    r["duration_ms"],
-                    r["files_changed"],
-                    r["insertions"],
-                    r["deletions"],
-                    total_score,
-                    json.dumps(breakdown),
-                    r["test_output"],
-                    now,
-                    bout_id,
-                    cid,
+                    status_txt, 1 if passed else 0, int(d["exit_code"]), float(d["duration_ms"]),
+                    int(d["files_changed"]), int(d["insertions"]), int(d["deletions"]),
+                    float(d["score"]), json.dumps(d["breakdown"]), str(d["test_output"] or ""), runs_json, 1 if is_flaky else 0, now,
+                    bout_id, d["contender_id"],
                 ),
             )
-
-        bout_status = "evaluated" if best_cid else "failed_all"
+        all_run = all(int(d["exit_code"]) != -1 for d in merged)
+        bout_status = ("evaluated" if best_cid else "failed_all") if all_run else "partial"
+        merged_cid = bout_row["merged_contender_id"] or ""
+        if merged_cid:
+            bout_status = "merged"
         conn.execute(
             "UPDATE bouts SET status = ?, winner_id = ?, updated_at = ? WHERE bout_id = ?",
             (bout_status, best_cid, now, bout_id),
         )
         conn.commit()
 
+    judged = ", ".join(fresh.keys()) or "none"
     record_event(
-        bout_id,
-        "bout.evaluated",
-        f"Evaluated contenders with `{test_cmd}`. Winner: {best_cid or 'none'} (score: {max(0.0, best_score):.1f}).",
+        bout_id, "bout.evaluated",
+        f"Judged {judged} with `{test_cmd}`. Leader: {best_cid or 'none'} (score: {best_score:.1f}).",
         contender_id=best_cid,
     )
     details = get_bout_details(bout_id)
