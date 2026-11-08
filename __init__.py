@@ -28,6 +28,9 @@ def _on_tool_request(**kwargs: Any) -> Optional[Dict[str, Any]]:
     binding = worktree_engine.get_session_binding(session_id, task_id)
     if not binding:
         return None
+    # Hermes runs tool_request middleware for every subagent tool call but does not emit
+    # post_tool_call for subagent calls, so contender activity is counted here.
+    worktree_engine.count_tool_call(binding["bout_id"], binding["contender_id"])
 
     rewritten, reason, violations = worktree_engine.rewrite_tool_args_for_worktree(
         tool_name, args, binding["worktree_path"], main_repo_path=binding.get("repo_path") or None
@@ -67,24 +70,14 @@ def _on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:
-    """Observer hook: track tool activity inside active contender subagent sessions."""
-    session_id = str(kwargs.get("session_id") or "")
-    task_id = str(kwargs.get("task_id") or "")
-    bound = worktree_engine.get_session_contender(session_id, task_id)
-    if not bound:
-        return
-    bout_id, contender_id = bound
-    try:
-        conn = worktree_engine.get_db()
-        with worktree_engine._LOCK:
-            conn.execute(
-                "UPDATE contenders SET tool_calls_count = tool_calls_count + 1 WHERE bout_id = ? AND contender_id = ?",
-                (bout_id, contender_id),
-            )
-            conn.commit()
-        worktree_engine.notify_desktop("bout.updated", {"bout_id": bout_id})
-    except Exception as exc:
-        logger.debug("Joust post_tool_call update skipped: %s", exc)
+    """Observer hook: refresh live Desktop views after a bound contender session's tool call.
+
+    Activity is counted in the tool_request middleware (Hermes does not emit post_tool_call for
+    subagent calls); this hook only pushes a refresh when it does fire for a bound session.
+    """
+    bound = worktree_engine.get_session_contender(str(kwargs.get("session_id") or ""), str(kwargs.get("task_id") or ""))
+    if bound:
+        worktree_engine.notify_desktop("bout.updated", {"bout_id": bound[0]})
 
 
 def _on_subagent_start(**kwargs: Any) -> None:
