@@ -1103,8 +1103,13 @@ def merge_winner(
     contender_id: Optional[str] = None,
     action: str = "apply",
     keep_backup: bool = True,
+    keep_losers: bool = True,
 ) -> Dict[str, Any]:
-    """Merge the winning contender's patch into the main repo, dry-run, rollback, or cleanup worktrees."""
+    """Merge the winning contender's patch into the main repo, dry-run, rollback, or cleanup worktrees.
+
+    With ``keep_losers`` every contender (winner included) is first snapshotted as a ``joust/<bout>/<cid>``
+    branch, so no attempt is lost when the worktrees are later cleaned up.
+    """
     conn = get_db()
     bout_row = conn.execute("SELECT * FROM bouts WHERE bout_id = ?", (bout_id,)).fetchone()
     if bout_row is None:
@@ -1112,34 +1117,48 @@ def merge_winner(
 
     repo_root = Path(bout_row["repo_path"]).resolve()
     action = (action or "apply").strip().lower()
+    if action not in ("apply", "dry_run", "rollback", "cleanup"):
+        raise ValueError(f"Unknown merge action {action!r}; expected apply, dry_run, rollback or cleanup.")
 
     if action == "cleanup":
+        kept = snapshot_contender_branches(bout_id) if keep_losers and bout_row["status"] != "cleaned" else {"branches": {}, "skipped": {}}
         rows = conn.execute("SELECT worktree_path FROM contenders WHERE bout_id = ?", (bout_id,)).fetchall()
         removed: List[str] = []
         for r in rows:
             wt = Path(r["worktree_path"])
             if wt.exists():
-                _run_git(["worktree", "remove", "--force", str(wt)], cwd=repo_root)
-                if wt.exists():
-                    shutil.rmtree(wt, ignore_errors=True)
+                _remove_worktree(repo_root, wt)
                 removed.append(str(wt))
+        shutil.rmtree(get_data_dir() / "worktrees" / bout_id, ignore_errors=True)
         _run_git(["worktree", "prune"], cwd=repo_root)
-        record_event(bout_id, "bout.cleanup", f"Cleaned up {len(removed)} ephemeral worktrees.")
+        with _LOCK:
+            conn.execute("UPDATE bouts SET status = 'cleaned', updated_at = ? WHERE bout_id = ?", (_now_iso(), bout_id))
+            conn.execute("UPDATE contenders SET status = 'cleaned', updated_at = ? WHERE bout_id = ?", (_now_iso(), bout_id))
+            conn.commit()
+        record_event(bout_id, "bout.cleanup", f"Cleaned up {len(removed)} ephemeral worktrees; results are read-only.")
         details = get_bout_details(bout_id)
         notify_desktop("bout.updated", {"bout_id": bout_id, "bout": details})
-        return {"ok": True, "action": "cleanup", "removed_worktrees": removed, "bout": details}
+        return {"ok": True, "action": "cleanup", "removed_worktrees": removed, "kept_branches": kept["branches"], "bout": details}
 
     if action == "rollback":
         backup_path_str = str(bout_row["backup_patch_path"] or "").strip()
+        if not bout_row["merged_contender_id"]:
+            raise ValueError(f"Bout {bout_id!r} has no merged contender to roll back.")
         if not backup_path_str or not Path(backup_path_str).is_file():
             raise ValueError(f"No rollback patch found for bout {bout_id!r}.")
         rev = _run_git(["apply", "-R", "--whitespace=nowarn", backup_path_str], cwd=repo_root)
         if rev.returncode != 0:
             raise RuntimeError(f"Rollback failed: {rev.stderr.strip()}")
         with _LOCK:
+            new_status = "evaluated" if bout_row["winner_id"] else "partial"
             conn.execute(
-                "UPDATE bouts SET status = 'evaluated', merged_contender_id = '', updated_at = ? WHERE bout_id = ?",
-                (_now_iso(), bout_id),
+                "UPDATE bouts SET status = ?, merged_contender_id = '', updated_at = ? WHERE bout_id = ?",
+                (new_status, _now_iso(), bout_id),
+            )
+            conn.execute(
+                "UPDATE contenders SET status = CASE WHEN tests_passed = 1 THEN 'passed' ELSE 'failed' END, updated_at = ? "
+                "WHERE bout_id = ? AND contender_id = ?",
+                (_now_iso(), bout_id, bout_row["merged_contender_id"]),
             )
             conn.commit()
         record_event(bout_id, "bout.rollback", "Rolled back merged contender patch from main repository.")
@@ -1147,12 +1166,14 @@ def merge_winner(
         notify_desktop("bout.updated", {"bout_id": bout_id, "bout": details})
         return {"ok": True, "action": "rollback", "bout": details}
 
+    if bout_row["status"] == "cleaned":
+        raise ValueError(f"Bout {bout_id!r} worktrees were cleaned up; nothing left to merge.")
     target_cid = (contender_id or bout_row["winner_id"] or "").strip()
     if not target_cid:
         raise ValueError("No contender_id specified and no winner has been evaluated yet. Run joust_evaluate first.")
 
     row = conn.execute(
-        "SELECT * FROM contenders WHERE bout_id = ? AND (contender_id = ? OR name = ?)",
+        "SELECT * FROM contenders WHERE bout_id = ? AND (contender_id = ? OR name = ?) ORDER BY rowid ASC",
         (bout_id, target_cid, target_cid),
     ).fetchone()
     if row is None:
@@ -1163,41 +1184,49 @@ def merge_winner(
     _, _, _, diff_text = _compute_worktree_diff_stats(wt_path)
     if not diff_text.strip():
         raise ValueError(f"Contender {cid!r} has no file changes to merge.")
+    kept = snapshot_contender_branches(bout_id) if (keep_losers and action == "apply") else {"branches": {}, "skipped": {}}
 
-    backups_dir = get_data_dir() / "backups"
-    backups_dir.mkdir(parents=True, exist_ok=True)
-    patch_file = backups_dir / f"{bout_id}_{cid}.patch"
-    patch_file.write_text(diff_text, encoding="utf-8")
+    # Pre-flight against a temp file: dry runs never touch the saved rollback patch.
+    tmp_dir = get_data_dir() / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    candidate = tmp_dir / f"{bout_id}_{cid}_{uuid.uuid4().hex[:6]}.patch"
+    candidate.write_text(diff_text, encoding="utf-8")
+    try:
+        check_res = _run_git(["apply", "--check", "--whitespace=nowarn", str(candidate)], cwd=repo_root)
+        if action == "dry_run":
+            return {
+                "ok": check_res.returncode == 0,
+                "action": "dry_run",
+                "bout_id": bout_id,
+                "contender_id": cid,
+                "clean_apply": check_res.returncode == 0,
+                "already_merged": bool(bout_row["merged_contender_id"]),
+                "message": "Patch applies cleanly." if check_res.returncode == 0 else check_res.stderr.strip(),
+            }
+        if bout_row["merged_contender_id"]:
+            raise ValueError(
+                f"Bout {bout_id!r} already has contender {bout_row['merged_contender_id']!r} merged; "
+                "run joust_merge action='rollback' first."
+            )
+        if check_res.returncode != 0:
+            raise RuntimeError(f"Patch conflict when applying {cid} to {repo_root}: {check_res.stderr.strip()}")
+        apply_res = _run_git(["apply", "--whitespace=nowarn", str(candidate)], cwd=repo_root)
+        if apply_res.returncode != 0:
+            raise RuntimeError(f"git apply failed: {apply_res.stderr.strip()}")
 
-    check_res = _run_git(["apply", "--check", "--whitespace=nowarn", str(patch_file)], cwd=repo_root)
-    if action == "dry_run":
-        return {
-            "ok": check_res.returncode == 0,
-            "action": "dry_run",
-            "bout_id": bout_id,
-            "contender_id": cid,
-            "clean_apply": check_res.returncode == 0,
-            "message": "Patch applies cleanly." if check_res.returncode == 0 else check_res.stderr.strip(),
-        }
-
-    if check_res.returncode != 0:
-        raise RuntimeError(f"Patch conflict when applying {cid} to {repo_root}: {check_res.stderr.strip()}")
-
-    apply_res = _run_git(["apply", "--whitespace=nowarn", str(patch_file)], cwd=repo_root)
-    if apply_res.returncode != 0:
-        raise RuntimeError(f"git apply failed: {apply_res.stderr.strip()}")
-
-    saved_patch = str(patch_file) if keep_backup else ""
-    if not keep_backup:
-        patch_file.unlink(missing_ok=True)
+        saved_patch = ""
+        if keep_backup:
+            backups_dir = get_data_dir() / "backups"
+            backups_dir.mkdir(parents=True, exist_ok=True)
+            backup = backups_dir / f"{bout_id}_{cid}.patch"
+            shutil.copyfile(candidate, backup)
+            saved_patch = str(backup)
+    finally:
+        candidate.unlink(missing_ok=True)
 
     with _LOCK:
         conn.execute(
-            """
-            UPDATE bouts
-            SET status = 'merged', merged_contender_id = ?, backup_patch_path = ?, updated_at = ?
-            WHERE bout_id = ?
-            """,
+            "UPDATE bouts SET status = 'merged', merged_contender_id = ?, backup_patch_path = ?, updated_at = ? WHERE bout_id = ?",
             (cid, saved_patch, _now_iso(), bout_id),
         )
         conn.execute(
@@ -1206,12 +1235,7 @@ def merge_winner(
         )
         conn.commit()
 
-    record_event(
-        bout_id,
-        "bout.merged",
-        f"Merged winning contender '{cid}' into {repo_root} (reversible patch saved).",
-        contender_id=cid,
-    )
+    record_event(bout_id, "bout.merged", f"Merged contender '{cid}' into {repo_root} (reversible patch saved).", contender_id=cid)
     details = get_bout_details(bout_id)
     notify_desktop("bout.updated", {"bout_id": bout_id, "bout": details})
     return {
@@ -1221,12 +1245,298 @@ def merge_winner(
         "merged_contender_id": cid,
         "repo_path": str(repo_root),
         "backup_patch_path": saved_patch,
+        "kept_branches": kept["branches"],
         "bout": details,
     }
 
 
-def get_bout_details(bout_id: str) -> Dict[str, Any]:
-    """Return full serialized bout state, ranked contenders, diffs, and recent audit events."""
+# ====================================================================================================
+# Crossfire: every contender's own tests are fired at every rival worktree
+# ====================================================================================================
+DEFAULT_TEST_GLOBS = ["test_*.py", "*_test.py", "tests/**", "test/**", "*.test.*", "*.spec.*", "*_test.go", "*Test.java", "*_test.rb", "*.t"]
+
+
+def _matches_test_glob(rel: str, globs: List[str]) -> bool:
+    name = Path(rel).name
+    for g in globs:
+        if g.endswith("/**"):
+            if rel.startswith(g[:-3] + "/"):
+                return True
+        elif fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(name, g):
+            return True
+    return False
+
+
+def _contender_test_files(wt_path: Path, globs: List[str]) -> List[str]:
+    """Relative paths of test files the contender added or changed (tracked diff + untracked, junk excluded)."""
+    if not wt_path.is_dir():
+        return []
+    changed = _run_git(["diff", "--name-only", "HEAD", "--", ".", *_JUNK_PATHSPECS], cwd=wt_path).stdout.splitlines()
+    untracked = _run_git(["ls-files", "--others", "--exclude-standard", "--", ".", *_JUNK_PATHSPECS], cwd=wt_path).stdout.splitlines()
+    out: List[str] = []
+    for rel in dict.fromkeys(changed + untracked):
+        rel = rel.strip()
+        if rel and "__xfire_" not in rel and (wt_path / rel).is_file() and _matches_test_glob(rel, globs):
+            out.append(rel)
+    return sorted(out)
+
+
+def _crossfire_name(rel: str, attacker: str) -> str:
+    p = Path(rel)
+    name = p.name
+    stem, dot, rest = name.partition(".")
+    tag = f"__xfire_{_slugify(attacker).replace('-', '_')}"
+    return str(p.with_name(f"{stem}{tag}{dot}{rest}" if dot else f"{stem}{tag}"))
+
+
+def run_crossfire(
+    bout_id: str,
+    timeout_seconds: int = 60,
+    runner: Any = None,
+    test_globs: Optional[List[str]] = None,
+    command_template: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fire each contender's new/changed tests at every rival worktree.
+
+    For attacker A and rival R, A's test files are copied into R under a ``__xfire_<A>`` suffix (so R's own
+    files are never overwritten), the tests are run (``command_template`` with ``{files}``, default
+    ``python3 -m unittest -q {files}`` for Python files, else the bout's test command), and the copies are
+    removed again. A contender "survives" a rival when it passes that rival's tests. Survival rate is the
+    first tiebreak on the leaderboard: a winner must beat its rivals' tests too, not only its own.
+    """
+    conn = get_db()
+    bout_row = conn.execute("SELECT * FROM bouts WHERE bout_id = ?", (bout_id,)).fetchone()
+    if bout_row is None:
+        raise ValueError(f"Unknown bout_id: {bout_id!r}")
+    if bout_row["status"] == "cleaned":
+        raise ValueError(f"Bout {bout_id!r} worktrees were cleaned up; crossfire needs live worktrees.")
+    rows = conn.execute("SELECT * FROM contenders WHERE bout_id = ? ORDER BY rowid ASC", (bout_id,)).fetchall()
+    if len(rows) < 2:
+        raise ValueError("Crossfire needs at least two contenders.")
+    globs = [g for g in (test_globs or DEFAULT_TEST_GLOBS) if isinstance(g, str) and g.strip()]
+    effective_timeout = clamp_timeout(timeout_seconds)
+
+    arsenal: Dict[str, List[str]] = {r["contender_id"]: _contender_test_files(Path(r["worktree_path"]), globs) for r in rows}
+    worktrees = {r["contender_id"]: Path(r["worktree_path"]) for r in rows}
+    # attacks[attacker][rival] = {"passed": bool, "exit_code": int, "output": str}
+    attacks: Dict[str, Dict[str, Dict[str, Any]]] = {cid: {} for cid in arsenal}
+
+    for attacker, files in arsenal.items():
+        if not files:
+            continue
+        for rival, wt in worktrees.items():
+            if rival == attacker or not wt.is_dir():
+                continue
+            copied: List[Path] = []
+            try:
+                for rel in files:
+                    dst_rel = _crossfire_name(rel, attacker)
+                    dst = wt / dst_rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(worktrees[attacker] / rel, dst)
+                    copied.append(dst)
+                rel_targets = [str(c.relative_to(wt)) for c in copied]
+                if command_template:
+                    cmd = command_template.replace("{files}", " ".join(shlex.quote(t) for t in rel_targets))
+                elif all(t.endswith(".py") for t in rel_targets):
+                    cmd = "python3 -m unittest -q " + " ".join(shlex.quote(t) for t in rel_targets)
+                else:
+                    cmd = (bout_row["test_command"] or "python3 -m unittest").strip()
+                exit_code, wall_ms, output, _ = _run_verification_command(cmd, wt, timeout_seconds=effective_timeout, runner=runner)
+                attacks[attacker][rival] = {"passed": exit_code == 0, "exit_code": int(exit_code), "wall_ms": wall_ms, "output": output[-1500:]}
+            finally:
+                for c in copied:
+                    c.unlink(missing_ok=True)
+                # intent-to-add entries for the removed copies would otherwise linger in the rival's index
+                _run_git(["reset", "-q", "--", *[str(c.relative_to(wt)) for c in copied]], cwd=wt)
+
+    now = _now_iso()
+    with _LOCK:
+        for r in rows:
+            cid = r["contender_id"]
+            defenses = {att: res[cid] for att, res in attacks.items() if cid in res}
+            total = len(defenses)
+            survived = sum(1 for d in defenses.values() if d["passed"])
+            payload = {
+                "test_files": arsenal.get(cid, []),
+                "attacks": {rival: {"passed": v["passed"], "exit_code": v["exit_code"]} for rival, v in attacks.get(cid, {}).items()},
+                "defenses": {att: {"passed": v["passed"], "exit_code": v["exit_code"], "output": v["output"]} for att, v in defenses.items()},
+                "ran_at": now,
+            }
+            conn.execute(
+                "UPDATE contenders SET crossfire_json = ?, crossfire_survived = ?, crossfire_total = ?, updated_at = ? "
+                "WHERE bout_id = ? AND contender_id = ?",
+                (json.dumps(payload), survived, total, now, bout_id, cid),
+            )
+        # re-pick the winner with crossfire as the first tiebreak
+        current = conn.execute("SELECT rowid, * FROM contenders WHERE bout_id = ? ORDER BY rowid ASC", (bout_id,)).fetchall()
+        merged = []
+        for c in current:
+            d = {k: c[k] for k in c.keys()}
+            d["rowid"] = c["rowid"]
+            d["tests_passed"] = bool(d["tests_passed"])
+            merged.append(d)
+        best_cid, best_score = _score_rows(merged)
+        if not bout_row["merged_contender_id"]:
+            conn.execute("UPDATE bouts SET winner_id = ?, updated_at = ? WHERE bout_id = ?", (best_cid, now, bout_id))
+        conn.commit()
+
+    shots = sum(len(v) for v in attacks.values())
+    armed = [cid for cid, f in arsenal.items() if f]
+    record_event(
+        bout_id, "bout.crossfire",
+        f"Crossfire: {len(armed)} contender(s) fired {shots} test volley(s) at rivals; leader now {best_cid or 'none'}.",
+        contender_id=best_cid,
+    )
+    details = get_bout_details(bout_id)
+    details["crossfire_summary"] = {"armed": armed, "volleys": shots, "attacks": {a: {r: v["passed"] for r, v in res.items()} for a, res in attacks.items()}}
+    notify_desktop("bout.updated", {"bout_id": bout_id, "bout": details})
+    return details
+
+
+# ====================================================================================================
+# Keep the losers: snapshot every contender as a branch in the main repository
+# ====================================================================================================
+def snapshot_contender_branches(bout_id: str, only: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Create ``joust/<bout>/<contender>`` branches in the main repository from each worktree's current state.
+
+    The commit is built with ``write-tree`` + ``commit-tree`` so the worktree's HEAD never moves (diffs and
+    merges keep working). Worktrees provisioned by the copy fallback have their own object store and are skipped.
+    """
+    conn = get_db()
+    bout_row = conn.execute("SELECT * FROM bouts WHERE bout_id = ?", (bout_id,)).fetchone()
+    if bout_row is None:
+        raise ValueError(f"Unknown bout_id: {bout_id!r}")
+    repo_root = Path(bout_row["repo_path"]).resolve()
+    repo_common = _run_git(["rev-parse", "--git-common-dir"], cwd=repo_root).stdout.strip()
+    repo_common_abs = str((repo_root / repo_common).resolve()) if repo_common else ""
+    rows = conn.execute("SELECT * FROM contenders WHERE bout_id = ? ORDER BY rowid ASC", (bout_id,)).fetchall()
+    branches: Dict[str, str] = {}
+    skipped: Dict[str, str] = {}
+    for r in rows:
+        cid = r["contender_id"]
+        if only and cid not in only:
+            continue
+        wt = Path(r["worktree_path"])
+        if not wt.is_dir():
+            skipped[cid] = "worktree missing"
+            continue
+        wt_common = _run_git(["rev-parse", "--git-common-dir"], cwd=wt).stdout.strip()
+        wt_common_abs = str((wt / wt_common).resolve()) if wt_common else ""
+        if not wt_common_abs or wt_common_abs != repo_common_abs:
+            skipped[cid] = "worktree does not share the repository object store (copy fallback)"
+            continue
+        _run_git(["add", "-A", "--", ".", *_JUNK_PATHSPECS], cwd=wt)
+        tree = _run_git(["write-tree"], cwd=wt).stdout.strip()
+        head = _run_git(["rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        _run_git(["reset", "-q"], cwd=wt)  # index back to HEAD; the working files are untouched
+        if not tree or not head:
+            skipped[cid] = "could not snapshot tree"
+            continue
+        msg = f"joust: {bout_id} contender {cid} ({r['status']}, score {float(r['score']):.1f})"
+        commit = _run_git(
+            ["-c", "user.name=Joust", "-c", "user.email=joust@local", "commit-tree", tree, "-p", head, "-m", msg], cwd=wt
+        ).stdout.strip()
+        if not commit:
+            skipped[cid] = "commit-tree failed"
+            continue
+        ref = f"joust/{bout_id}/{cid}"
+        res = _run_git(["branch", "-f", ref, commit], cwd=repo_root)
+        if res.returncode != 0:
+            skipped[cid] = res.stderr.strip() or "branch creation failed"
+            continue
+        branches[cid] = ref
+        with _LOCK:
+            conn.execute("UPDATE contenders SET branch_ref = ?, updated_at = ? WHERE bout_id = ? AND contender_id = ?", (ref, _now_iso(), bout_id, cid))
+            conn.commit()
+    if branches:
+        record_event(bout_id, "bout.branches", f"Kept {len(branches)} contender(s) as branches: {', '.join(branches.values())}.")
+    return {"branches": branches, "skipped": skipped, "repo_path": str(repo_root)}
+
+
+# ====================================================================================================
+# Bout report (markdown)
+# ====================================================================================================
+def generate_report(bout_id: str, write_path: Optional[str] = None, max_diff_chars: int = 6000) -> Dict[str, Any]:
+    """Render a markdown report of the bout (scoreboard, Flake Shield, Crossfire, diffs, outputs, branches).
+
+    Always saved under ``<HERMES_HOME>/plugin-data/joust/reports/<bout>.md``; ``write_path`` additionally writes a
+    copy inside the bout's repository (paths outside the repository are refused).
+    """
+    details = get_bout_details(bout_id)
+    repo_root = Path(details["repo_path"]).resolve()
+    lines: List[str] = [
+        f"# ⚔️ Joust bout report: {details['title']}",
+        "",
+        f"- **Bout:** `{bout_id}` · **Status:** `{details['status']}` · **Base commit:** `{details['base_commit'][:12]}`",
+        f"- **Repository:** `{details['repo_path']}`",
+        f"- **Verification command:** `{details['test_command']}`",
+        f"- **Winner:** `{details['winner_id'] or 'none'}`" + (f" · **Merged:** `{details['merged_contender_id']}`" if details["merged_contender_id"] else ""),
+        "",
+        f"**Goal.** {details['goal']}",
+        "",
+        "## Scoreboard",
+        "",
+        "| Rank | Contender | Model | Status | Score | Correct / Speed / Minimal | Latency | Runs | Crossfire | Diff | Branch |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for c in details["contenders"]:
+        bd = c.get("score_breakdown") or {}
+        runs = c.get("runs") or []
+        runs_txt = f"{sum(1 for r in runs if r.get('exit_code') == 0)}/{len(runs)}" + (" FLAKY" if c.get("flaky") else "") if runs else "-"
+        xf = f"{c['crossfire_survived']}/{c['crossfire_total']} survived" if c.get("crossfire_total") else "-"
+        badge = "🏆 " if c["is_winner"] else ""
+        lines.append(
+            f"| #{c['rank']} | {badge}`{c['contender_id']}` | {c['model'] or '-'} | {c['status']} | **{c['score']:.1f}** | "
+            f"{bd.get('correctness', 0):.0f} / {bd.get('speed', 0):.1f} / {bd.get('minimalism', 0):.1f} | {c['duration_ms']:.2f} ms | {runs_txt} | {xf} | "
+            f"+{c['insertions']}/-{c['deletions']} ({c['files_changed']} files) | {('`' + c['branch_ref'] + '`') if c.get('branch_ref') else '-'} |"
+        )
+    lines += ["", "## Contenders", ""]
+    for c in details["contenders"]:
+        lines += [f"### {c['name']} (`{c['contender_id']}`)", "", f"**Strategy.** {c['strategy'] or '-'}", ""]
+        xf = c.get("crossfire") or {}
+        if xf.get("defenses"):
+            lines.append("**Crossfire defenses.** " + ", ".join(f"vs `{a}`: {'✅' if d['passed'] else '❌'}" for a, d in xf["defenses"].items()))
+            lines.append("")
+        if xf.get("test_files"):
+            lines.append("**Test volleys fired.** " + ", ".join(f"`{f}`" for f in xf["test_files"]))
+            lines.append("")
+        if c.get("steering_notes"):
+            lines.append("**Steering.** " + " · ".join(n.get("guidance", "") for n in c["steering_notes"] if isinstance(n, dict)))
+            lines.append("")
+        diff = (c.get("diff_preview") or "").strip()
+        if diff:
+            lines += ["<details><summary>Diff</summary>", "", "```diff", diff[:max_diff_chars], "```", "", "</details>", ""]
+        out = (c.get("test_output") or "").strip()
+        if out:
+            lines += ["<details><summary>Verification output</summary>", "", "```text", out[-2500:], "```", "", "</details>", ""]
+    lines += ["## Timeline", ""]
+    for e in reversed(details.get("events") or []):
+        lines.append(f"- `{e.get('created_at', '')[:19]}` **{e.get('event_type')}** {e.get('detail', '')}")
+    lines += ["", "_Generated by Joust for Hermes Agent._", ""]
+    markdown = "\n".join(lines)
+
+    reports_dir = get_data_dir() / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    saved = reports_dir / f"{bout_id}.md"
+    saved.write_text(markdown, encoding="utf-8")
+    written: List[str] = [str(saved)]
+    if write_path:
+        target = Path(write_path).expanduser()
+        if not target.is_absolute():
+            target = repo_root / target
+        target = target.resolve()
+        if not _inside(target, repo_root):
+            raise ValueError(f"write_path must be inside the bout repository {repo_root}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(markdown, encoding="utf-8")
+        written.append(str(target))
+    record_event(bout_id, "bout.report", f"Report written: {', '.join(written)}.")
+    return {"bout_id": bout_id, "markdown": markdown, "paths": written}
+
+
+def get_bout_details(bout_id: str, include_diffs: bool = True) -> Dict[str, Any]:
+    """Return full serialized bout state, ranked contenders, diffs (optional), and recent audit events."""
     conn = get_db()
     bout_row = conn.execute("SELECT * FROM bouts WHERE bout_id = ?", (bout_id,)).fetchone()
     if bout_row is None:
