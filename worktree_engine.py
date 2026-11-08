@@ -819,36 +819,57 @@ def _run_verification_command(
         "PYTHONDONTWRITEBYTECODE": "1",
         "CI": "true",
     }
-
-    # Use argv execution when no shell metacharacters are present; otherwise use /bin/sh -c
-    has_shell_meta = any(tok in command for tok in ("&&", "||", "|", ";", ">", "<", "$"))
-    if has_shell_meta:
-        argv = ["/bin/sh", "-c", command]
-    else:
-        argv = shlex.split(command)
-
-    t0 = time.perf_counter()
     try:
         proc = subprocess.run(
-            argv,
-            cwd=str(wt_path),
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=max(5, int(timeout_seconds)),
-            check=False,
+            ["/bin/sh", "-c", command], cwd=str(wt_path), env=env, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=effective, check=False,
         )
-        duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        wall_ms = round((time.perf_counter() - t0) * 1000.0, 2)
         combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-        return proc.returncode, duration_ms, _redact(combined[:8000])
+        squashed, bench = _squash_output(combined)
+        return proc.returncode, wall_ms, squashed, bench
     except subprocess.TimeoutExpired:
-        duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-        return 124, duration_ms, f"Verification timed out after {timeout_seconds}s"
+        wall_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        return 124, wall_ms, f"Verification timed out after {effective}s", None
     except Exception as exc:
-        duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-        return 1, duration_ms, f"Execution error: {exc}"
+        wall_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        return 1, wall_ms, f"Execution error: {exc}", None
+
+
+def _crossfire_rate(r: Dict[str, Any]) -> float:
+    total = int(r.get("crossfire_total") or 0)
+    return (int(r.get("crossfire_survived") or 0) / total) if total else 0.0
+
+
+def _score_rows(rows: List[Dict[str, Any]]) -> Tuple[str, float]:
+    """Score every evaluated row in place (adds 'score' and 'breakdown'); return (winner_id, winner_score).
+
+    Correctness 60 (gate) + relative speed 25 (fastest passing / own) + diff minimalism 15.
+    Never-run rows (exit_code -1) are left untouched. Winner = top of the same ordering the leaderboard uses.
+    """
+    evaluated = [r for r in rows if int(r["exit_code"]) != -1]
+    passing_durations = [max(0.5, float(r["duration_ms"])) for r in evaluated if r["tests_passed"] and float(r["duration_ms"]) > 0]
+    fastest_ms = min(passing_durations) if passing_durations else 1.0
+    for r in evaluated:
+        passed = bool(r["tests_passed"])
+        dur = max(0.5, float(r["duration_ms"]))
+        loc_delta = int(r["insertions"]) + int(r["deletions"])
+        correctness_pts = 60.0 if passed else 0.0
+        if passed:
+            speed_pts = round(25.0 * min(1.0, fastest_ms / dur), 2)
+        else:
+            speed_pts = round(5.0 * min(1.0, fastest_ms / max(dur, fastest_ms)), 2)
+        minimalism_pts = 5.0 if loc_delta == 0 else round(15.0 / (1.0 + max(0, loc_delta - 12) / 90.0), 2)
+        total = round(correctness_pts + speed_pts + minimalism_pts, 2)
+        r["score"] = total
+        r["breakdown"] = {"correctness": correctness_pts, "speed": speed_pts, "minimalism": minimalism_pts, "total": total}
+    winners = sorted(
+        (r for r in evaluated if r["tests_passed"] and not int(r.get("flaky") or 0)),
+        key=lambda r: (-_crossfire_rate(r), -float(r["score"]), float(r["duration_ms"]), int(r["rowid"])),
+    )
+    if winners:
+        return winners[0]["contender_id"], float(winners[0]["score"])
+    return "", 0.0
 
 
 def evaluate_bout(
