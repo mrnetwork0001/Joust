@@ -189,6 +189,8 @@ def _run_git(args: List[str], cwd: Path, timeout: int = 30) -> subprocess.Comple
         "GIT_TERMINAL_PROMPT": "0",
         "LC_ALL": "C",
     }
+    if os.environ.get("USERPROFILE"):
+        env["USERPROFILE"] = os.environ["USERPROFILE"]
     return subprocess.run(
         ["git", *args],
         cwd=str(cwd),
