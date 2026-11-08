@@ -608,10 +608,7 @@ function JoustRightPane({ ctx }) {
 
   useEffect(() => {
     load()
-    const stop = ctx.onEvent('plugin.joust.bout.updated', () => load())
-    return () => {
-      if (typeof stop === 'function') stop()
-    }
+    return subscribeLive(ctx, '', load)
   }, [ctx, load])
 
   const latest = (summary.bouts || [])[0]
@@ -632,7 +629,7 @@ function JoustRightPane({ ctx }) {
       }),
       !latest
         ? jsx('div', {
-            className: 'rounded border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) p-3 text-(--ui-text-tertiary)',
+            className: 'rounded border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) p-3 text-(--ui-text-tertiary)',
             children: 'No active bouts. Open Full Studio to launch a 3-way demo tournament.'
           })
         : jsxs('div', {
@@ -641,7 +638,7 @@ function JoustRightPane({ ctx }) {
               jsx('div', { className: 'font-medium text-(--ui-text-primary)', children: latest.title }),
               ...(latest.contenders || []).map(c =>
                 jsxs('div', {
-                  className: 'flex items-center justify-between rounded border border-(--ui-stroke-primary) bg-(--ui-surface-secondary) px-2.5 py-1.5',
+                  className: 'flex items-center justify-between rounded border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) px-2.5 py-1.5',
                   children: [
                     jsx('span', { className: 'font-medium text-(--ui-text-primary)', children: '#' + c.rank + ' ' + c.name }),
                     jsx('span', {
