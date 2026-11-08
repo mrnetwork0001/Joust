@@ -28,7 +28,8 @@ def _load_engine() -> Any:
     _ENGINE_CACHE["engine"] = module
     return module
 
-import worktree_engine  # noqa: E402
+
+worktree_engine = _load_engine()
 
 router = APIRouter()
 
