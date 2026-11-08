@@ -14,23 +14,56 @@ logger = logging.getLogger(__name__)
 _PLUGIN_DIR = Path(__file__).resolve().parent
 
 
-def _on_tool_request(**kwargs: Any) -> Dict[str, Any]:
-    """Middleware: scope file and terminal tool arguments to a contender's isolated Git worktree."""
+def _on_tool_request(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Middleware: scope file and terminal tool arguments to a contender's isolated Git worktree.
+
+    Returns None whenever nothing changed so Hermes does not record a plugin rewrite for every call.
+    """
     tool_name = str(kwargs.get("tool_name") or "")
     args = kwargs.get("args")
     if not isinstance(args, dict):
-        return {"args": args}
-
+        return None
     session_id = str(kwargs.get("session_id") or "")
     task_id = str(kwargs.get("task_id") or "")
-    wt_path = worktree_engine.get_session_worktree(session_id, task_id)
-    if not wt_path:
-        return {"args": args}
+    binding = worktree_engine.get_session_binding(session_id, task_id)
+    if not binding:
+        return None
 
-    rewritten, reason = worktree_engine.rewrite_tool_args_for_worktree(tool_name, args, wt_path)
+    rewritten, reason, violations = worktree_engine.rewrite_tool_args_for_worktree(
+        tool_name, args, binding["worktree_path"], main_repo_path=binding.get("repo_path") or None
+    )
+    if violations:
+        msg = (
+            f"Joust: {tool_name} tried to reach outside contender '{binding['contender_id']}' worktree "
+            f"({', '.join(violations)}). Work only inside {binding['worktree_path']}."
+        )
+        worktree_engine.record_violation(str(kwargs.get("tool_call_id") or "") or session_id, msg)
     if reason:
         return {"args": rewritten, "source": "joust", "reason": reason}
-    return {"args": args}
+    return None
+
+
+def _on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Hook: veto contender calls that tried to escape their worktree; ask the human before a merge.
+
+    ``{"action": "block"}`` ends the call with the message as the tool result; ``{"action": "approve"}``
+    escalates the call to Hermes's human-approval gate (the ``rule_key`` scopes the [a]lways allowlist).
+    """
+    tool_name = str(kwargs.get("tool_name") or "")
+    args = kwargs.get("args") or {}
+    violation = worktree_engine.pop_violation(str(kwargs.get("tool_call_id") or ""), str(kwargs.get("session_id") or ""))
+    if violation:
+        return {"action": "block", "message": violation}
+    if tool_name == "joust_merge" and isinstance(args, dict):
+        action = str(args.get("action") or "apply").strip().lower()
+        if action in ("apply", "rollback"):
+            verb = "roll back the merged patch from" if action == "rollback" else "apply the winning contender's patch to"
+            return {
+                "action": "approve",
+                "message": f"Joust will {verb} your working tree for bout {args.get('bout_id') or '?'} (git apply; a rollback patch is kept).",
+                "rule_key": "joust:merge",
+            }
+    return None
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:
