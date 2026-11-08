@@ -1015,6 +1015,8 @@ def steer_contender(
 
     cid = row["contender_id"]
     wt_path = Path(row["worktree_path"]).resolve()
+    if row["status"] == "cleaned" or not wt_path.is_dir():
+        raise ValueError(f"Contender {cid!r} worktree is gone (bout cleaned up); nothing to steer.")
     notes = json.loads(row["steering_notes_json"] or "[]")
     notes.append({"guidance": guidance, "timestamp": _now_iso()})
 
