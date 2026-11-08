@@ -386,3 +386,158 @@ class TestEvaluateJudge(_EngineEdgeCase):
 # ====================================================================================================
 # joust_launch: validation, naming, dirty trees, path forms, copytree fallback
 # ====================================================================================================
+class TestLaunchEdges(_EngineEdgeCase):
+    def _launch_raw(self, repo_path: str, names: Iterable[str] = ("a", "b"), contenders: Any = None) -> Dict[str, Any]:
+        return json.loads(
+            tools.joust_launch(
+                {
+                    "title": "t",
+                    "goal": "g",
+                    "repo_path": repo_path,
+                    "contenders": contenders if contenders is not None else [{"name": n, "strategy": "s"} for n in names],
+                }
+            )
+        )
+
+    def test_rejects_non_repo_unborn_repo_and_missing_path(self) -> None:
+        not_git = self.tmp / "notgit"
+        not_git.mkdir()
+        res = self._launch_raw(str(not_git))
+        self.assertFalse(res["ok"])
+        self.assertIn("Not a Git repository", res["error"])
+
+        unborn = self.tmp / "unborn"
+        unborn.mkdir()
+        _git(unborn, "init", "-q")
+        res = self._launch_raw(str(unborn))
+        self.assertFalse(res["ok"])
+        self.assertIn("no commits", res["error"])
+
+        res = self._launch_raw(str(self.tmp / "does-not-exist"))
+        self.assertFalse(res["ok"])
+        self.assertIn("does not exist", res["error"])
+        self.assertEqual(eng.list_bouts()["total_bouts"], 0)
+
+    def test_contender_count_is_bounded_to_2_through_4(self) -> None:
+        repo = _make_repo(self.tmp)
+        one = self._launch_raw(str(repo), names=("solo",))
+        self.assertFalse(one["ok"])
+        self.assertIn("2 to 4", one["error"])
+        five = self._launch_raw(str(repo), names=tuple(f"c{i}" for i in range(5)))
+        self.assertFalse(five["ok"])
+        self.assertIn("at most 4", five["error"])
+        bad = self._launch_raw(str(repo), contenders="alpha,beta")
+        self.assertFalse(bad["ok"])
+        self.assertEqual(eng.list_bouts()["total_bouts"], 0)
+        self.assertEqual(len(_git(repo, "worktree", "list").stdout.strip().splitlines()), 1)
+
+    def test_duplicate_and_blank_names_are_rejected_unicode_and_slashes_get_unique_ids(self) -> None:
+        repo = _make_repo(self.tmp)
+        dup = self._launch_raw(str(repo), names=("alpha", "alpha", "beta"))
+        self.assertFalse(dup["ok"])
+        self.assertIn("Duplicate contender name", dup["error"])
+        blank = self._launch_raw(str(repo), names=("alpha", ""))
+        self.assertFalse(blank["ok"])
+        self.assertEqual(eng.list_bouts()["total_bouts"], 0)  # failed launches leave no phantom bout
+        self.assertEqual(len(_git(repo, "worktree", "list").stdout.strip().splitlines()), 1)
+
+        bout = self.launch(repo, names=("Hash Bucket", "hash-bucket", "日本語", "fast/track"))
+        ids = {c["contender_id"]: c["name"] for c in bout["contenders"]}
+        self.assertEqual(len(ids), 4)
+        self.assertEqual(set(ids.values()), {"Hash Bucket", "hash-bucket", "日本語", "fast/track"})
+        self.assertEqual(len({str(p) for p in self.worktrees(bout).values()}), 4)
+        for cid in ids:
+            self.assertRegex(cid, r"^[a-z0-9][a-z0-9_\-]*$")
+    def test_dirty_tree_tracked_edits_carry_over_but_untracked_do_not(self) -> None:
+        repo = _make_repo(self.tmp)
+        (repo / "tracked2.txt").write_text("v1\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "more")
+        (repo / "calc.py").write_text("def add(a, b):\n    return a + b  # unstaged\n", encoding="utf-8")
+        (repo / "tracked2.txt").write_text("v2 staged\n", encoding="utf-8")
+        _git(repo, "add", "tracked2.txt")
+        (repo / "staged_new.txt").write_text("new staged\n", encoding="utf-8")
+        _git(repo, "add", "staged_new.txt")
+        (repo / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+
+        bout = self.launch(repo)
+        for wt in self.worktrees(bout).values():
+            self.assertIn("unstaged", (wt / "calc.py").read_text(encoding="utf-8"))
+            self.assertEqual((wt / "tracked2.txt").read_text(encoding="utf-8"), "v2 staged\n")
+            self.assertTrue((wt / "staged_new.txt").is_file())
+            # Current behaviour (undocumented limitation): untracked files are not mirrored.
+            self.assertFalse((wt / "untracked.txt").exists())
+            self.assertFalse((wt / ".joust_dirty.patch").exists())
+        # main repo working tree is left exactly as it was
+        self.assertEqual(
+            sorted(_git(repo, "status", "--porcelain").stdout.splitlines()),
+            sorted([" M calc.py", "A  staged_new.txt", "M  tracked2.txt", "?? untracked.txt"]),
+        )
+
+    def test_tilde_relative_and_subdirectory_repo_paths_resolve_to_repo_root(self) -> None:
+        repo = _make_repo(self.tmp)
+        (repo / "subdir").mkdir()
+        old_home, old_cwd = os.environ.get("HOME"), os.getcwd()
+        try:
+            os.environ["HOME"] = str(self.tmp)
+            res = self._launch_raw("~/repo")
+            self.assertTrue(res["ok"], res)
+            self.assertEqual(Path(res["bout"]["repo_path"]), repo.resolve())
+            os.chdir(self.tmp)
+            res = self._launch_raw("repo")
+            self.assertTrue(res["ok"], res)
+            self.assertEqual(Path(res["bout"]["repo_path"]), repo.resolve())
+        finally:
+            os.chdir(old_cwd)
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+        res = self._launch_raw(str(repo / "subdir"))
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(Path(res["bout"]["repo_path"]), repo.resolve())
+
+    def test_copytree_fallback_when_git_worktree_add_fails(self) -> None:
+        repo = _make_repo(self.tmp)
+        (repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+        (repo / "ignored.txt").write_text("local only\n", encoding="utf-8")
+        _git(repo, "add", ".gitignore")
+        _git(repo, "commit", "-q", "-m", "gitignore")
+        original = eng._run_git
+
+        def failing_worktree_add(args, cwd, timeout=30):
+            if list(args[:2]) == ["worktree", "add"]:
+                return subprocess.CompletedProcess(["git", *args], 128, "", "fatal: simulated worktree add failure")
+            return original(args, cwd, timeout)
+
+        eng._run_git = failing_worktree_add
+        try:
+            bout = self.launch(repo)
+        finally:
+            eng._run_git = original
+
+        wt = self.worktrees(bout)
+        for p in wt.values():
+            self.assertTrue((p / ".git").exists())
+            self.assertEqual(Path(_git(p, "rev-parse", "--show-toplevel").stdout.strip()), p.resolve())
+            self.assertEqual(_git(p, "status", "--porcelain").stdout, "")  # committed baseline, clean tree
+            self.assertTrue((p / "ignored.txt").exists())  # copied, but .gitignore keeps it out of diffs
+        self.assertEqual(len(_git(repo, "worktree", "list").stdout.strip().splitlines()), 1)
+
+        (wt["alpha"] / "calc.py").write_text(_FIXED_CALC, encoding="utf-8")
+        res = self.evaluate(bout["bout_id"])
+        self.assertEqual(res["winner_id"], "alpha")
+        alpha = self.by_id(res)["alpha"]
+        self.assertEqual((alpha["files_changed"], alpha["insertions"], alpha["deletions"]), (1, 1, 1))
+        self.assertTrue(self.merge(bout["bout_id"], "apply")["ok"])
+        self.assertEqual((repo / "calc.py").read_text(encoding="utf-8"), _FIXED_CALC)
+        self.assertFalse((repo / "ignored.txt").read_text(encoding="utf-8") != "local only\n")
+        self.assertTrue(self.merge(bout["bout_id"], "rollback")["ok"])
+        cleaned = self.merge(bout["bout_id"], "cleanup")
+        self.assertTrue(cleaned["ok"])
+        self.assertFalse(any(p.exists() for p in wt.values()))
+
+
+# ====================================================================================================
+# Middleware path jail
+# ====================================================================================================
