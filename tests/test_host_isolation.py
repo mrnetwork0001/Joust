@@ -427,3 +427,50 @@ class TestRegisterInHostLikeContext(unittest.TestCase):
             json.dumps(kw["schema"])  # schemas must be JSON (they cross the wire in host mode)
 
 
+class TestDesktopNotify(unittest.TestCase):
+    """``notify_desktop`` must never raise: inside the plugin host the broadcast has no client, and under a
+    bare interpreter ``hermes_cli`` is not importable at all."""
+
+    def _with_fake_plugin_events(self, broadcast):
+        saved = {k: sys.modules.get(k) for k in ("hermes_cli", "hermes_cli.plugin_events")}
+        pkg = types.ModuleType("hermes_cli")
+        pkg.__path__ = []  # type: ignore[attr-defined]
+        mod = types.ModuleType("hermes_cli.plugin_events")
+        mod.broadcast_plugin_event = broadcast  # type: ignore[attr-defined]
+        pkg.plugin_events = mod  # type: ignore[attr-defined]
+        sys.modules["hermes_cli"] = pkg
+        sys.modules["hermes_cli.plugin_events"] = mod
+        return saved
+
+    def _restore(self, saved: Dict[str, Any]) -> None:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    def test_notify_is_silent_when_broadcast_raises(self) -> None:
+        seen: List[tuple] = []
+
+        def broadcast(plugin_id, event, payload=None):
+            seen.append((plugin_id, event, payload))
+            raise RuntimeError("no gateway in this process")
+
+        saved = self._with_fake_plugin_events(broadcast)
+        try:
+            self.assertIsNone(worktree_engine.notify_desktop("bout.updated", {"bout_id": "bout-1"}))
+        finally:
+            self._restore(saved)
+        self.assertEqual(seen, [("joust", "bout.updated", {"bout_id": "bout-1"})])
+
+    def test_notify_is_silent_when_hermes_is_missing(self) -> None:
+        saved = {k: sys.modules.get(k) for k in ("hermes_cli", "hermes_cli.plugin_events")}
+        sys.modules["hermes_cli"] = None  # type: ignore[assignment]  # forces ImportError on the lazy import
+        sys.modules.pop("hermes_cli.plugin_events", None)
+        try:
+            self.assertIsNone(worktree_engine.notify_desktop("bout.updated"))
+        finally:
+            self._restore(saved)
+
+
+@unittest.skipUnless(HERMES_AVAILABLE, "Hermes is not importable in this interpreter")
