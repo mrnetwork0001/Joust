@@ -200,3 +200,21 @@ class TestSubagentFlow(unittest.TestCase):
             self.assertFalse(c["tests_passed"])
             self.assertIn("blocked", c["test_output"])
 
+    def test_subagent_stop_auto_evaluates_contender(self) -> None:
+        bout = self._launch()
+        a = bout["contenders"][0]
+        (Path(a["worktree_path"]) / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+        joust_pkg._on_subagent_stop(
+            parent_session_id="parent-sess", parent_turn_id="", child_session_id=a["subagent_session_id"],
+            child_role="leaf", child_summary="done", child_status="completed", tool_call_history=[], duration_ms=10,
+        )
+        joust_pkg.wait_for_auto_judges()  # the benchmark runs off Hermes' hook thread
+        details = worktree_engine.get_bout_details(bout["bout_id"])
+        judged = {c["contender_id"]: c for c in details["contenders"]}
+        self.assertTrue(judged["plus-operator"]["tests_passed"])
+        self.assertGreaterEqual(judged["plus-operator"]["score"], 60.0)
+        # The rival has not run yet: it keeps its live status instead of being marked failed
+        self.assertEqual(judged["sum-builtin"]["status"], "running")
+        self.assertEqual(judged["sum-builtin"]["exit_code"], -1)
+        self.assertEqual(details["status"], "partial")
+
