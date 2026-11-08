@@ -360,6 +360,21 @@ def get_session_worktree(session_id: Optional[str], task_id: Optional[str] = Non
 
 
 def get_session_contender(session_id: Optional[str], task_id: Optional[str] = None) -> Optional[Tuple[str, str]]:
+    b = get_session_binding(session_id, task_id)
+    return (b["bout_id"], b["contender_id"]) if b else None
+
+
+def record_violation(key: str, message: str) -> None:
+    """Remember an escape attempt so the pre_tool_call hook can veto the call (middleware already clamped it)."""
+    if not key:
+        return
+    with _LOCK:
+        if len(_PENDING_VIOLATIONS) > 512:
+            _PENDING_VIOLATIONS.clear()
+        _PENDING_VIOLATIONS[key] = message
+
+
+def pop_violation(*keys: Optional[str]) -> Optional[str]:
     with _LOCK:
         for key in (session_id, task_id):
             if key and key in _ACTIVE_SESSION_CONTENDERS:
