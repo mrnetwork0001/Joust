@@ -234,3 +234,20 @@ class TestHermesChain(unittest.TestCase):
 
     # ---- 2. tool dispatch through the registry / ctx.dispatch_tool -------------------------------------
 
+    def test_03_registry_dispatch_joust_launch_provisions_git_worktrees(self) -> None:
+        repo = _make_repo(Path(self._tmp.name))
+        res = self._launch(repo)
+        self.assertEqual(len(res["bout"]["contenders"]), 2)
+        self.assertEqual(res["directive"], f'::joust-bout{{id="{res["bout_id"]}"}}')
+        for c in res["bout"]["contenders"]:
+            self.assertEqual(c["status"], "ready")
+            wt = Path(c["worktree_path"])
+            self.assertTrue(wt.is_dir(), wt)
+            self.assertTrue((wt / ".git").is_file(), "expected a `git worktree add` worktree, not a copytree fallback")
+            self.assertTrue(str(wt).startswith(str((self.home / "plugin-data" / "joust").resolve())), wt)
+        # A second dispatch surface: ctx.dispatch_tool reaches the same handler.
+        ctx = self.plugin.tools._CTX_REF
+        status = json.loads(ctx.dispatch_tool("joust_status", {"bout_id": res["bout_id"]}))
+        self.assertTrue(status["ok"], status)
+        self.assertEqual(status["bout"]["bout_id"], res["bout_id"])
+
