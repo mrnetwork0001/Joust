@@ -388,27 +388,29 @@ def _inside(p: Path, root: Path) -> bool:
 
 
 def _jail_path_inside_worktree(raw_path: str, worktree_root: Path, main_repo_root: Optional[Path] = None) -> str:
-    """Ensure a file path resolves inside worktree_root, rewriting relative or main-repo paths safely."""
+    """Resolve a file path inside worktree_root.
+
+    Relative paths resolve against the worktree; absolute paths inside the main repository are mapped
+    to the same relative location inside the worktree; anything else raises ValueError (the caller
+    clamps and records a violation for the pre_tool_call veto).
+    """
     worktree_resolved = worktree_root.resolve()
     p = Path(raw_path).expanduser()
     if not p.is_absolute():
         target = (worktree_resolved / p).resolve()
     else:
         resolved = p.resolve()
-        if str(resolved).startswith(str(worktree_resolved)):
+        if _inside(resolved, worktree_resolved):
             return str(resolved)
         if main_repo_root is not None:
             main_resolved = main_repo_root.resolve()
-            if str(resolved).startswith(str(main_resolved)):
-                rel = resolved.relative_to(main_resolved)
-                target = (worktree_resolved / rel).resolve()
+            if _inside(resolved, main_resolved):
+                target = (worktree_resolved / resolved.relative_to(main_resolved)).resolve()
             else:
                 target = resolved
         else:
             target = resolved
-
-    # Enforce strict containment inside worktree_resolved when relative or rewritten
-    if not str(target).startswith(str(worktree_resolved)):
+    if not _inside(target, worktree_resolved):
         raise ValueError(f"Path {raw_path!r} escapes isolated Joust worktree {worktree_resolved}")
     return str(target)
 
