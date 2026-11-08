@@ -101,3 +101,10 @@ class TestCrossfire(_Base):
         merged = json.loads(tools.joust_merge({"bout_id": bid, "action": "dry_run"}))
         self.assertTrue(merged["clean_apply"], merged)
 
+    def test_crossfire_without_test_volleys_is_a_no_op(self) -> None:
+        bout = self.launch()
+        res = json.loads(tools.joust_crossfire({"bout_id": bout["bout_id"]}))
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["crossfire"]["volleys"], 0)
+        self.assertTrue(all(c["crossfire_total"] == 0 for c in res["bout"]["contenders"]))
+
