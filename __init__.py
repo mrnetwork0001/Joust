@@ -171,8 +171,22 @@ def _handle_slash_joust(raw_args: str, **kwargs: Any) -> str:
             return "\n".join(lines)
 
         if sub == "judge" and len(parts) >= 2:
-            bout = worktree_engine.evaluate_bout(parts[1])
+            bout = tools.evaluate_with_context(bout_id=parts[1])
             return f"Evaluated `{bout['bout_id']}` — Winner: `{bout['winner_id'] or 'none'}`\n\n{bout['directive']}"
+
+        if sub == "crossfire" and len(parts) >= 2:
+            res = json.loads(tools.joust_crossfire({"bout_id": parts[1]}))
+            if not res.get("ok"):
+                return f"Crossfire failed: {res.get('error')}"
+            rows = ", ".join(f"`{r['contender_id']}` {r['survived']}/{r['total']}" for r in res["leaderboard"])
+            return f"🎯 Crossfire on `{parts[1]}` — survival: {rows}. Leader: `{res['winner_id'] or 'none'}`\n\n{res['directive']}"
+
+        if sub == "report" and len(parts) >= 2:
+            res = json.loads(tools.joust_report({"bout_id": parts[1]}))
+            if not res.get("ok"):
+                return f"Report failed: {res.get('error')}"
+            branches = ", ".join(f"`{b}`" for b in res["kept_branches"].values()) or "none"
+            return f"📜 Report saved to `{res['report_paths'][-1]}`. Kept branches: {branches}."
 
         if sub == "merge" and len(parts) >= 2:
             cid = parts[2] if len(parts) >= 3 else None
@@ -196,7 +210,7 @@ def _handle_slash_joust(raw_args: str, **kwargs: Any) -> str:
                 f"- `{b['bout_id']}` **{b['title']}** — status: `{b['status']}`, "
                 f"winner: `{b['winner_id'] or 'pending'}` ({len(b['contenders'])} contenders)"
             )
-        lines.append("\nSubcommands: `/joust status`, `/joust demo`, `/joust judge <bout_id>`, `/joust merge <bout_id> [contender]`, `/joust rollback <bout_id>`")
+        lines.append("\nSubcommands: `/joust status`, `/joust demo`, `/joust judge <bout_id>`, `/joust crossfire <bout_id>`, `/joust report <bout_id>`, `/joust merge <bout_id> [contender]`, `/joust rollback <bout_id>`")
         return "\n".join(lines)
     except Exception as exc:
         return f"Joust command error: {exc}"
