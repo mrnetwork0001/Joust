@@ -1,5 +1,5 @@
 # Catalog entry for NousResearch/hermes-agent → plugin-catalog/joust.yaml
-# Replace `sha` with the full 40-char SHA of the PUSHED commit being submitted (keep the quotes).
+# Replace `sha` and every <SHA> in the image URLs with the full 40-char SHA of the PUSHED commit (keep the quotes).
 name: joust
 repo: https://github.com/mrnetwork0001/Joust
 sha: "0000000000000000000000000000000000000000"
@@ -11,8 +11,12 @@ category: tools
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/mrnetwork0001/Joust#readme
 version: "0.1.0"
-# image: https://raw.githubusercontent.com/mrnetwork0001/Joust/<sha>/assets/banner.png
-screenshots: []
+image: https://raw.githubusercontent.com/mrnetwork0001/Joust/<SHA>/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mrnetwork0001/Joust/<SHA>/assets/screenshots/arena-page.png
+  - https://raw.githubusercontent.com/mrnetwork0001/Joust/<SHA>/assets/screenshots/inline-card.png
+  - https://raw.githubusercontent.com/mrnetwork0001/Joust/<SHA>/assets/screenshots/flake-shield-output.png
+  - https://raw.githubusercontent.com/mrnetwork0001/Joust/<SHA>/assets/screenshots/plugins-tab.png
 platforms: [linux, macos]
 capabilities:
   provides_tools: [joust_launch, joust_evaluate, joust_diff, joust_steer, joust_merge, joust_status, joust_crossfire, joust_report]
