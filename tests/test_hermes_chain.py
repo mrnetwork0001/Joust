@@ -494,15 +494,20 @@ class TestHermesChain(unittest.TestCase):
         entry["setup_fn"](joust_parser)
         repo = _make_repo(Path(self._tmp.name))
         bout_id = self._launch(repo)["bout_id"]
-        for argv, check in (
-            (["joust", "list"], lambda out: self.assertGreaterEqual(out["total_bouts"], 1)),
-            (["joust", "judge", bout_id], lambda out: self.assertEqual(out["bout_id"], bout_id)),
-        ):
-            ns = parser.parse_args(argv)
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                entry["handler_fn"](ns)
-            check(json.loads(buf.getvalue()))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            entry["handler_fn"](parser.parse_args(["joust", "list"]))
+        self.assertGreaterEqual(json.loads(buf.getvalue())["total_bouts"], 1)
+
+        # `hermes joust judge` has no terminal tool to route the model-chosen command through: it must refuse,
+        # point to /joust judge, and leave every contender unjudged.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as exit_info:
+            entry["handler_fn"](parser.parse_args(["joust", "judge", bout_id]))
+        self.assertEqual(exit_info.exception.code, 2)
+        self.assertIn(f"/joust judge {bout_id}", err.getvalue())
+        status = json.loads(self.plugin.tools.joust_status({"bout_id": bout_id}))
+        self.assertTrue(all(c["exit_code"] == -1 for c in status["bout"]["contenders"]), status)
 
     # ---- 6. the real ctx.subagent_lifecycle outside an active parent turn ---------------------------------
 

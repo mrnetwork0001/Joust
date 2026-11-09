@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -213,7 +214,7 @@ def _setup_cli_parser(parser: Any) -> None:
     sub = parser.add_subparsers(dest="joust_cmd")
     sub.add_parser("list", help="List recent Joust bouts and contender leaderboards")
     sub.add_parser("demo", help="Run a self-contained 3-contender Joust tournament in a demo repo")
-    judge_p = sub.add_parser("judge", help="Evaluate contenders in a bout")
+    judge_p = sub.add_parser("judge", help="Refuses: judge inside Hermes with /joust judge <bout> or ask the agent")
     judge_p.add_argument("bout_id", help="Bout ID to evaluate")
     merge_p = sub.add_parser("merge", help="Merge winning contender into base repository")
     merge_p.add_argument("bout_id", help="Bout ID")
@@ -227,8 +228,10 @@ def _handle_cli_command(args: Any) -> None:
         bout = worktree_engine.run_demo_bout()
         print(json.dumps(bout, indent=2))
     elif cmd == "judge":
-        bout = worktree_engine.evaluate_bout(args.bout_id)
-        print(json.dumps(bout, indent=2))
+        # The stored test command was chosen by the model. Outside an agent turn there is no Hermes terminal
+        # tool to route it through, so the CLI refuses instead of running it on the host (same as the dashboard).
+        print(worktree_engine._refusal_message(args.bout_id), file=sys.stderr)
+        raise SystemExit(2)
     elif cmd == "merge":
         action = "rollback" if getattr(args, "rollback", False) else "apply"
         res = worktree_engine.merge_winner(args.bout_id, contender_id=getattr(args, "contender", "") or None, action=action)
