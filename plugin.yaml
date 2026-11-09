@@ -1,5 +1,5 @@
 name: joust
-version: "0.1.0"
+version: "0.1.1"
 description: "Parallel Git-worktree subagent arena, deterministic benchmark judge, and 1-click winner merge studio for Hermes."
 author: "mrnetwork"
 license: MIT

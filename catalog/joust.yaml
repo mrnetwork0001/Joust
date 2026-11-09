@@ -10,7 +10,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/mrnetwork0001/Joust#readme
-version: "0.1.0"
+version: "0.1.1"
 image: https://raw.githubusercontent.com/mrnetwork0001/Joust/<SHA>/assets/banner.png
 screenshots:
   - https://raw.githubusercontent.com/mrnetwork0001/Joust/<SHA>/assets/screenshots/arena-page.png
