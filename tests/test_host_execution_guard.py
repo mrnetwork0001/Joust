@@ -90,5 +90,18 @@ class TestHostExecutionGuard(_EngineEdgeCase):
         return code, buf.getvalue()
 
 
+class TestReportWritePath(_EngineEdgeCase):
+    def test_write_path_refuses_dot_git(self) -> None:
+        repo = _make_repo(self.tmp, broken=False)
+        bid = self.launch(repo)["bout_id"]
+        for bad in (".git/hooks/post-checkout", ".git/joust.md", "sub/.GIT/x.md"):
+            res = json.loads(tools.joust_report({"bout_id": bid, "write_path": bad}))
+            self.assertFalse(res["ok"], bad)
+            self.assertIn(".git", res["error"])
+        self.assertFalse((repo / ".git" / "joust.md").exists())
+        ok = json.loads(tools.joust_report({"bout_id": bid, "write_path": "docs/gitlog.md"}))
+        self.assertTrue(ok["ok"], ok)
+
+
 if __name__ == "__main__":
     unittest.main()

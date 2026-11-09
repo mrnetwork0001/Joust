@@ -1570,6 +1570,8 @@ def generate_report(bout_id: str, write_path: Optional[str] = None, max_diff_cha
         target = target.resolve()
         if not _inside(target, repo_root):
             raise ValueError(f"write_path must be inside the bout repository {repo_root}")
+        if any(part.lower() == ".git" for part in target.relative_to(repo_root).parts):
+            raise ValueError("write_path must not be inside .git/")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(markdown, encoding="utf-8")
         written.append(str(target))
