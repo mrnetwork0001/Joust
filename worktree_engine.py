@@ -36,7 +36,12 @@ def get_data_dir() -> Path:
 
         return plugin_data_dir(PLUGIN_ID)
     except Exception:
-        hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+        try:
+            from hermes_constants import get_hermes_home
+
+            hermes_home = Path(get_hermes_home())
+        except Exception:  # bare interpreter (unit tests): Hermes is not importable
+            hermes_home = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes"))
         root = hermes_home / "plugin-data" / PLUGIN_ID
         root.mkdir(parents=True, exist_ok=True)
         return root
