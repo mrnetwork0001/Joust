@@ -760,8 +760,8 @@ def make_terminal_runner(ctx: Any) -> Optional[Any]:
 
     Routing through the terminal tool keeps Hermes's dangerous-command guards, approval prompts and the
     configured terminal backend in the loop for model- or user-supplied test commands (catalog rule 12).
-    Returns None when no plugin context is available (CLI demo, dashboard) so callers fall back to a
-    bounded subprocess for plugin-authored commands.
+    Returns None when no plugin context is available (CLI, dashboard). Callers then refuse to run the bout's
+    command; only the built-in demo opts into a bounded subprocess for its own plugin-authored commands.
     """
     if ctx is None or not callable(getattr(ctx, "dispatch_tool", None)):
         return None
@@ -790,17 +790,37 @@ def _squash_output(combined: str) -> Tuple[str, Optional[float]]:
     return _redact(combined), bench_ms
 
 
+class HostExecutionRefused(RuntimeError):
+    """Raised when a bout command would run on the host without the Hermes terminal tool."""
+
+
+def _refusal_message(bout_id: str) -> str:
+    return (
+        f"Refusing to run bout {bout_id}'s test command outside Hermes: it was chosen by the model, so it must go "
+        "through the Hermes terminal tool (dangerous-command guard, approval prompt, configured sandbox backend). "
+        f"Run `/joust judge {bout_id}` in a Hermes chat, or ask the agent to call joust_evaluate."
+    )
+
+
+def _require_runner(bout_id: str, runner: Any, allow_subprocess: bool) -> None:
+    if runner is None and not allow_subprocess:
+        raise HostExecutionRefused(_refusal_message(bout_id))
+
+
 def _run_verification_command(
-    command: str, wt_path: Path, timeout_seconds: int = 60, runner: Any = None
+    command: str, wt_path: Path, timeout_seconds: int = 60, runner: Any = None, allow_subprocess: bool = False
 ) -> Tuple[int, float, str, Optional[float]]:
     """Run the verification/benchmark command inside wt_path.
 
     Returns (exit_code, wall_ms, output, benchmark_ms). With ``runner`` (see make_terminal_runner) the
-    command goes through the Hermes terminal tool; without it, a bounded ``/bin/sh -c`` subprocess runs
-    (only used for plugin-authored commands such as the built-in demo, or explicit CLI/dashboard calls).
+    command goes through the Hermes terminal tool. A bounded ``/bin/sh -c`` subprocess runs only with
+    ``allow_subprocess=True``, which only the built-in demo passes for its own plugin-authored commands.
+    Anything else without a runner is refused (exit 125) and never executed.
     """
     if not wt_path.is_dir():
         return 1, 0.0, f"Worktree directory missing: {wt_path}", None
+    if runner is None and not allow_subprocess:
+        return 125, 0.0, "[joust] refused: no Hermes terminal tool available; the command was not run.", None
     effective = clamp_timeout(timeout_seconds)
     t0 = time.perf_counter()
 
@@ -809,7 +829,7 @@ def _run_verification_command(
             raw = runner(command, str(wt_path), effective)
             wall_ms = round((time.perf_counter() - t0) * 1000.0, 2)
             data = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, dict) else {})
-            output = str(data.get("output") or "")
+            output = str(data.get("output") or "").strip()
             err = data.get("error")
             status = str(data.get("status") or "")
             exit_code = data.get("exit_code")
@@ -894,6 +914,7 @@ def evaluate_bout(
     runner: Any = None,
     persist_command: bool = False,
     runs: int = 1,
+    allow_subprocess: bool = False,
 ) -> Dict[str, Any]:
     """Execute the verification & benchmark suite across contenders, compute Joust Scores, and rank the winner.
 
@@ -909,6 +930,7 @@ def evaluate_bout(
         raise ValueError(f"Unknown bout_id: {bout_id!r}")
     if bout_row["status"] == "cleaned":
         raise ValueError(f"Bout {bout_id!r} worktrees were cleaned up; results are read-only.")
+    _require_runner(bout_id, runner, allow_subprocess)
 
     stored_cmd = (bout_row["test_command"] or "python3 -m unittest").strip()
     test_cmd = (test_command_override or stored_cmd).strip()
@@ -934,7 +956,9 @@ def evaluate_bout(
         run_log: List[Dict[str, Any]] = []
         output = ""
         for _ in range(n_runs):
-            exit_code, wall_ms, output, bench_ms = _run_verification_command(test_cmd, wt_path, timeout_seconds=timeout_seconds, runner=runner)
+            exit_code, wall_ms, output, bench_ms = _run_verification_command(
+                test_cmd, wt_path, timeout_seconds=timeout_seconds, runner=runner, allow_subprocess=allow_subprocess
+            )
             run_log.append({"exit_code": int(exit_code), "wall_ms": wall_ms, "benchmark_ms": bench_ms})
             if exit_code != 0 and n_runs > 1 and len(run_log) == n_runs:
                 break
@@ -1309,6 +1333,7 @@ def run_crossfire(
     runner: Any = None,
     test_globs: Optional[List[str]] = None,
     command_template: Optional[str] = None,
+    allow_subprocess: bool = False,
 ) -> Dict[str, Any]:
     """Fire each contender's new/changed tests at every rival worktree.
 
@@ -1324,6 +1349,7 @@ def run_crossfire(
         raise ValueError(f"Unknown bout_id: {bout_id!r}")
     if bout_row["status"] == "cleaned":
         raise ValueError(f"Bout {bout_id!r} worktrees were cleaned up; crossfire needs live worktrees.")
+    _require_runner(bout_id, runner, allow_subprocess)
     rows = conn.execute("SELECT * FROM contenders WHERE bout_id = ? ORDER BY rowid ASC", (bout_id,)).fetchall()
     if len(rows) < 2:
         raise ValueError("Crossfire needs at least two contenders.")
@@ -1356,7 +1382,9 @@ def run_crossfire(
                     cmd = "python3 -m unittest -q " + " ".join(shlex.quote(t) for t in rel_targets)
                 else:
                     cmd = (bout_row["test_command"] or "python3 -m unittest").strip()
-                exit_code, wall_ms, output, _ = _run_verification_command(cmd, wt, timeout_seconds=effective_timeout, runner=runner)
+                exit_code, wall_ms, output, _ = _run_verification_command(
+                    cmd, wt, timeout_seconds=effective_timeout, runner=runner, allow_subprocess=allow_subprocess
+                )
                 attacks[attacker][rival] = {"passed": exit_code == 0, "exit_code": int(exit_code), "wall_ms": wall_ms, "output": output[-1500:]}
             finally:
                 for c in copied:
@@ -1906,5 +1934,7 @@ def match_orders(bids: List[Dict], asks: List[Dict]) -> List[Tuple[str, str, int
     )
 
     # Flake Shield (3 runs each) + Crossfire (every contender's new tests fired at every rival)
-    evaluate_bout(bout_id, runs=3)
-    return run_crossfire(bout_id)
+    # The demo's commands and test files are written by this plugin into its own temporary repo, so they may
+    # run as a bounded subprocess; nothing model-chosen ever takes this path.
+    evaluate_bout(bout_id, runs=3, allow_subprocess=True)
+    return run_crossfire(bout_id, allow_subprocess=True)

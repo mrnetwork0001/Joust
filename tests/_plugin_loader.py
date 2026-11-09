@@ -27,3 +27,35 @@ else:
 
 tools = joust_pkg.tools  # arena_tools, re-exported by the package as ``tools``
 worktree_engine = joust_pkg.worktree_engine
+
+
+# ---- a stand-in for the Hermes ``terminal`` tool ------------------------------------------------------------
+# Outside Hermes there is no ``ctx.dispatch_tool``, and the engine now refuses to run a bout's command without
+# one. Unit tests that call the tools with no context get this runner instead: it returns the terminal tool's
+# JSON shape ({output, exit_code, error, status}), so the tests exercise the same parsing path as production.
+import json as _json
+import os as _os
+import subprocess as _subprocess
+
+real_make_terminal_runner = worktree_engine.make_terminal_runner
+
+
+def fake_terminal_runner(command: str, workdir: str, timeout: int) -> str:
+    env = {"PATH": _os.environ.get("PATH", "/usr/bin:/bin"), "HOME": _os.environ.get("HOME", ""),
+           "PYTHONPATH": workdir, "PYTHONDONTWRITEBYTECODE": "1"}
+    try:
+        proc = _subprocess.run(["/bin/sh", "-c", command], cwd=workdir, env=env, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=timeout, check=False)
+        return _json.dumps({"output": (proc.stdout or "") + (proc.stderr or ""), "exit_code": proc.returncode,
+                            "error": None, "status": "ok"})
+    except _subprocess.TimeoutExpired:
+        return _json.dumps({"output": f"Command timed out after {timeout}s", "exit_code": 124, "error": None,
+                            "status": "timeout"})
+
+
+def _make_terminal_runner_for_tests(ctx):
+    runner = real_make_terminal_runner(ctx)
+    return runner if runner is not None else fake_terminal_runner
+
+
+worktree_engine.make_terminal_runner = _make_terminal_runner_for_tests
