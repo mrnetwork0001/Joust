@@ -31,7 +31,7 @@ Built for the Hermes Agent Plugin Hackathon 2026 · Demo: `<VIDEO_URL>` · Code:
 | **Bout report** | Markdown scoreboard, Flake Shield runs, Crossfire matrix, diffs, outputs and timeline, saved under `plugin-data/joust/reports/<bout>.md` or a path inside the repo. | `joust_report`, `/joust report <bout_id>` |
 | **Auto-judge** | When a contender subagent finishes, Joust judges its worktree on a background thread (config `auto_evaluate_on_stop`). | `subagent_stop` hook |
 | **Desktop arena** | A `/joust` page (leaderboard, diff viewer, test output, Run Demo), a right pane, a status-bar chip, the palette command **Joust: Open Parallel Worktree Arena**, and an inline `::joust-bout{id="..."}` card the agent can put in its reply. | Hermes Desktop |
-| **CLI** | `hermes joust list`, `demo`, `judge <bout_id>`, `merge <bout_id> [--contender ID] [--rollback]`. Wired when plugins run in-process, the Hermes default. | Terminal |
+| **CLI** | `hermes joust list`, `demo`, `merge <bout_id> [--contender ID] [--rollback]`. `judge <bout_id>` refuses and points you to `/joust judge`, because judging runs a model-chosen command. Wired when plugins run in-process, the Hermes default. | Terminal |
 
 ![The inline bout card in a real Hermes chat](assets/screenshots/inline-card.png)
 
@@ -222,7 +222,7 @@ On Nov 8, 2026, bout `bout-18dbdfb6` ran three real subagents through Hermes Age
 
 ## Safety
 
-- **Test commands go through Hermes.** Model-chosen commands run via `ctx.dispatch_tool("terminal", ...)`, so guards, approval prompts and your terminal backend apply. If the tool refuses, the contender is recorded as failed and nothing else is tried. Only the built-in demo and explicit CLI or dashboard calls outside an agent turn fall back to a bounded `/bin/sh -c` subprocess.
+- **Test commands go through Hermes.** Model-chosen commands run via `ctx.dispatch_tool("terminal", ...)`, so guards, approval prompts and your terminal backend apply. If the tool refuses, the contender is recorded as failed and nothing else is tried. Without the terminal tool nothing runs: `hermes joust judge` and the dashboard refuse and point you to `/joust judge` or the agent. Only the built-in demo, whose commands Joust writes itself, uses a bounded `/bin/sh -c` subprocess.
 - **Merges need you.** `joust_merge apply` and `rollback` raise the approval card. Patches are pre-flighted with `git apply --check`, a rollback patch is saved, and every contender is kept as a branch first.
 - **Hard limits.** 2 to 4 contenders with unique names, timeouts clamped to 5 to 600 seconds per contender, 1 to 7 Flake Shield runs, output stored as the first 3,000 plus the last 5,000 characters, diff previews capped at 4,000 characters.
 - **Isolation is scoping, not a sandbox.** File paths, patch headers, search roots and terminal working directories are redirected and escapes are vetoed, but the text of a shell command is not rewritten. Judge only code you are willing to run.
@@ -276,13 +276,13 @@ python3 demo_arena.py                          # the demo tournament in a termin
 node tests/desktop_smoke/smoke.mjs             # needs react, react-dom, happy-dom outside the repo
 ```
 
-**Test status (2026-11-08 14:16 UTC):**
+**Test status (2026-11-09 08:28 UTC):**
 
 ```
-python3 -m unittest discover -s tests          Ran 91 tests ... OK (skipped=16)
-with Hermes 0.23.0 importable                  Ran 91 tests ... OK (skipped=1)
-node tests/desktop_smoke/smoke.mjs             [desktop-smoke] 55 passed, 0 failed, 2 warnings, 0 skipped
-hermes plugins validate .                      Validation passed.  (no warnings)
+python3 -m unittest discover -s tests          Ran 97 tests ... OK (skipped=16)
+with Hermes 0.23.0 importable                  Ran 97 tests ... OK (skipped=1)
+hermes plugins validate --install-deps .       Validation passed.  (no warnings)
+node tests/desktop_smoke/smoke.mjs             [desktop-smoke] 55 passed, 0 failed, 2 warnings, 0 skipped  (2026-11-08; desktop/ unchanged since)
 ```
 
 The tests with Hermes importable load Joust through the real plugin manager and drive the real `apply_tool_request_middleware`, `invoke_hook`, tool dispatch and slash dispatch, in both `plugins.isolation: in_process` and `host` modes.
@@ -313,15 +313,15 @@ Joust/
 ├── demo_arena.py            terminal demo
 ├── catalog/joust.yaml       catalog entry draft
 ├── assets/                  banner and real Hermes screenshots for the catalog gallery
-└── tests/                   91 unittest cases + the desktop smoke harness
+└── tests/                   97 unittest cases + the desktop smoke harness
 ```
 
 ## Disclosure (catalog rule 13)
 
 - **Repository access and git writes.** Joust reads the Git repository given by `repo_path` (or the session's working directory) and runs local `git` in it and in its worktrees: `rev-parse`, `diff HEAD --binary`, `worktree add --detach` (this registers `<repo>/.git/worktrees/<contender>` entries that persist until `joust_merge action="cleanup"`), `worktree remove --force`, `worktree prune`, `add -N` plus `diff HEAD` on every status, listing, diff and dashboard refresh (new files are intent-added inside the worktree index only), `apply` (your uncommitted tracked edits into each worktree at launch, then the winning patch into your working tree on `joust_merge`), `apply -R` (rollback), and `init`, `add -A` and `commit` for the built-in demo repository and for the fallback used when `git worktree add` is refused. That fallback copies the repository directory, including untracked files, into the plugin data folder (ignoring `.git`, `__pycache__`, `.venv`, `node_modules`). Only tracked edits are mirrored into worktrees; untracked files are not.
-- **Command execution.** The bout's test or benchmark command (chosen by you or the model) runs in every contender worktree through the Hermes `terminal` tool via `ctx.dispatch_tool`, so Hermes's dangerous-command guards, approval prompts and the configured terminal backend apply. If the terminal tool refuses or is unavailable, the contender is recorded as failed and nothing else is tried. The same path is used when a contender subagent finishes (`auto_evaluate_on_stop`, default on). Only the self-contained demo (`/joust demo`, `hermes joust demo`, the Desktop Run Demo button) and explicit CLI or dashboard calls made outside an agent context fall back to a bounded `/bin/sh -c` subprocess, and the demo runs plugin-authored commands in a plugin-owned temporary repository only. Timeouts are clamped to 5 to 600 seconds per contender; contenders are judged sequentially.
+- **Command execution.** The bout's test or benchmark command (chosen by you or the model) runs in every contender worktree through the Hermes `terminal` tool via `ctx.dispatch_tool`, so Hermes's dangerous-command guards, approval prompts and the configured terminal backend apply. If the terminal tool refuses or is unavailable, the contender is recorded as failed and nothing else is tried. The same path is used when a contender subagent finishes (`auto_evaluate_on_stop`, default on). Without the terminal tool the command is never run: `hermes joust judge <bout>` and the dashboard's evaluate route refuse and point you to `/joust judge <bout>` or the agent, and the engine itself refuses any call that has no terminal runner. Only the self-contained demo (`/joust demo`, `hermes joust demo`, the Desktop Run Demo button) uses a bounded `/bin/sh -c` subprocess, for the plugin-authored commands it writes into a plugin-owned temporary repository. Timeouts are clamped to 5 to 600 seconds per contender; contenders are judged sequentially.
 - **Approvals.** `joust_merge apply` and `rollback` are escalated to Hermes's human approval gate through a `pre_tool_call` approve directive. The Desktop Re-Judge buttons hand the request to the agent instead of executing from an HTTP click. The Desktop Merge button is an explicit user action on a reviewed diff with a saved rollback patch.
-- **Branches.** With `keep_loser_branches` (default on), `joust_merge apply` and `cleanup` and `joust_report` create `joust/<bout>/<contender>` branches in your repository from each worktree's state (including untracked files, junk excluded); delete them with `git branch -D`. `joust_crossfire` temporarily copies test files into rival worktrees under a `__xfire_` suffix and removes them afterwards. `joust_report write_path` writes a markdown file inside the repository only when you ask for it.
+- **Branches.** With `keep_loser_branches` (default on), `joust_merge apply` and `cleanup` and `joust_report` create `joust/<bout>/<contender>` branches in your repository from each worktree's state (including untracked files, junk excluded); delete them with `git branch -D`. `joust_crossfire` temporarily copies test files into rival worktrees under a `__xfire_` suffix and removes them afterwards. `joust_report write_path` writes a markdown file inside the repository, never under `.git/`, only when you ask for it.
 - **Files written.** Worktrees under `<HERMES_HOME>/plugin-data/joust/worktrees/<bout>/<contender>`, rollback patches under `.../backups/`, temporary pre-flight patches under `.../tmp/`, reports under `.../reports/`, the demo repository under `.../demo_orderbook_repo/`, and bout metadata (goals, repository and worktree paths, test commands, captured output, diff stats, events) in `.../joust.db` (SQLite, WAL). `joust_steer(write_files=...)` writes only inside the contender's worktree.
 - **Subagents and cost.** `joust_launch` starts one Hermes subagent per contender through `ctx.subagent_lifecycle` (default on); each uses tokens on the model it runs on. A `tool_request` middleware rewrites file paths, V4A patch headers, `search_files` roots and terminal `workdir` for those child sessions into their worktree; the text of shell commands is not rewritten (best-effort scoping, not a sandbox). A `pre_tool_call` hook vetoes calls whose paths point outside the worktree.
 - **Desktop events.** Bout snapshots (title, goal, repository and worktree paths, scores, up to 4,000 characters of diff per contender, captured test output) are broadcast to connected Hermes Desktop windows as `plugin.joust.bout.updated`; the Desktop half also polls the dashboard API every 4 seconds while visible. Captured output is scrubbed of token-like strings with a standard-library regex before it is stored or shown.
